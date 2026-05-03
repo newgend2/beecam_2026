@@ -23,15 +23,6 @@ require_file() {
     fi
 }
 
-install_partition_tools() {
-    log "Installing partition and mount tools"
-    sudo apt-get update
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        exfatprogs \
-        parted \
-        util-linux
-}
-
 install_data_initializer() {
     log "Installing DATA partition initializer"
     require_file "${SCRIPT_DIR}/scripts/beecam-init-data.sh"
@@ -41,15 +32,6 @@ install_data_initializer() {
     sudo install -m 0644 "${SCRIPT_DIR}/systemd_services/beecam-init-data.service" /etc/systemd/system/beecam-init-data.service
     sudo systemctl daemon-reload
     sudo systemctl enable beecam-init-data.service
-
-    log "Attempting to initialize /data now"
-    if sudo "$DATA_INIT"; then
-        log "/data is ready"
-    else
-        warn "/data could not be created while booted from this card."
-        warn "This is expected if Raspberry Pi OS expanded root to fill the SD card."
-        warn "The golden-image workflow should shrink/truncate offline, then beecam-init-data.service will create /data on first boot."
-    fi
 }
 
 install_apt_packages() {
@@ -127,6 +109,12 @@ install_wittypi() {
         exit 1
     fi
 
+    log "Disabling fake-hwclock for Witty Pi RTC"
+    sudo apt-get -y remove fake-hwclock || true
+    sudo update-rc.d -f fake-hwclock remove || true
+    sudo systemctl disable fake-hwclock || true
+    sudo rm -f /lib/udev/hwclock-set
+
     log "Installing BeeCam Witty Pi scripts"
     for script in beforeScript.sh afterStartup.sh runScript.sh beforeShutdown.sh; do
         require_file "${SCRIPT_DIR}/wittypi/${script}"
@@ -148,7 +136,7 @@ install_beecam_files() {
         sudo cp -a "${SCRIPT_DIR}/configs/." /data/configs/
     else
         warn "/data is not mounted; first boot will copy configs from ${SCRIPT_DIR}/configs."
-        warn "Keep this repo at /home/pi/setup in the golden image."
+        warn "Keep this repo at /home/pi/setup on the Pi."
     fi
 }
 
@@ -156,11 +144,23 @@ install_boot_files() {
     log "Updating boot firmware files"
     require_file "${SCRIPT_DIR}/boot_firmware/config.txt"
 
-    if ! grep -q "$VIDEO_ARG" /boot/firmware/cmdline.txt; then
-        sudo sed -i "1 s/$/ ${VIDEO_ARG}/" /boot/firmware/cmdline.txt
+    local boot_dir="/boot/firmware"
+    if [[ ! -d "$boot_dir" ]]; then
+        boot_dir="/boot"
     fi
 
-    sudo install -m 0644 "${SCRIPT_DIR}/boot_firmware/config.txt" /boot/firmware/config.txt
+    require_file "${boot_dir}/cmdline.txt"
+
+    if ! grep -Fq "$VIDEO_ARG" "${boot_dir}/cmdline.txt"; then
+        sudo sed -i "1 s/$/ ${VIDEO_ARG}/" "${boot_dir}/cmdline.txt"
+    fi
+
+    sudo install -m 0644 "${SCRIPT_DIR}/boot_firmware/config.txt" "${boot_dir}/config.txt"
+
+    if ! sudo cmp -s "${SCRIPT_DIR}/boot_firmware/config.txt" "${boot_dir}/config.txt"; then
+        echo "Failed to replace ${boot_dir}/config.txt" >&2
+        exit 1
+    fi
 }
 
 install_systemd_services() {
@@ -191,7 +191,6 @@ main() {
     require_file "${SCRIPT_DIR}/configs/camera_config_final.ini"
     require_file "${SCRIPT_DIR}/configs/schedule.conf"
 
-    install_partition_tools
     install_data_initializer
     install_apt_packages
     install_python_packages

@@ -22,11 +22,7 @@ require_cmd() {
 
 require_cmd awk
 require_cmd blkid
-require_cmd blockdev
 require_cmd mountpoint
-require_cmd parted
-require_cmd partprobe
-require_cmd udevadm
 
 if [[ ! -b "$DEV" ]]; then
     log "expected SD device $DEV was not found"
@@ -34,6 +30,11 @@ if [[ ! -b "$DEV" ]]; then
 fi
 
 if [[ ! -b "$DATA_PART" ]]; then
+    require_cmd blockdev
+    require_cmd parted
+    require_cmd partprobe
+    require_cmd udevadm
+
     log "creating DATA partition in remaining SD-card space"
     ROOT_END_SECTOR=$(
         parted -m "$DEV" unit s print |
@@ -53,7 +54,7 @@ if [[ ! -b "$DATA_PART" ]]; then
     if (( FREE_SECTORS < MIN_FREE_SECTORS )); then
         log "not enough unallocated space after root to create DATA partition"
         log "the root partition probably fills the SD card"
-        log "a booted Pi cannot safely shrink its mounted root filesystem"
+        log "run partition_beecam_sd_on_pc.sh from a Linux PC/laptop"
         exit 2
     fi
 

@@ -1,9 +1,9 @@
 # BeeCam Setup
 
 This is a scripted provisioning repo, not a pure golden-image workflow. Start
-from a fresh Raspberry Pi OS card, clone this repo, and run the installer. The
-installer sets up software, files, services, and a first-boot DATA partition
-initializer.
+from a fresh Raspberry Pi OS card, clone this repo, and run the installer on the
+Pi. Then shut down, move the card to a Linux PC/laptop, and run the partitioning
+script from this repo.
 
 ## Quick Start
 
@@ -33,26 +33,36 @@ The installer:
 - replaces `/boot/firmware/config.txt`
 - installs systemd services
 
-## Partitioning Note
+The source folders inside `/home/pi/setup` remain there after installation. The
+installer also copies BeeCam runtime files to `/home/pi/beecam` and Witty Pi
+scripts to `/home/pi/wittypi`.
 
-A booted Pi cannot safely shrink its own mounted root filesystem. If Raspberry Pi
-OS has expanded root to fill the whole SD card, `beecam_install.sh` will install
-and enable `beecam-init-data.service`, but it will not be able to create
-`/dev/mmcblk0p3` immediately.
+## PC/Laptop Partitioning
 
-For the scripted setup workflow:
+A booted Pi cannot safely shrink its own mounted root filesystem, so partitioning
+is done from a Linux PC/laptop after the Pi-side install.
 
-1. Run `beecam_install.sh` on the Pi.
-2. If root already leaves unallocated space, the installer can create and mount
-   `/data` immediately.
-3. If root fills the SD card, shrink root offline from a Linux PC, then boot the
-   Pi again.
-4. On the next boot, `beecam-init-data.service` creates and
-   formats `/dev/mmcblk0p3`, mounts it at `/data`, and copies default configs
-   from `/home/pi/setup/configs` to `/data/configs`.
+1. Shut down the Pi cleanly:
 
-Keep `/home/pi/setup` on the Pi. The DATA initializer uses that repo copy as
-the source for default configs.
+   ```bash
+   sudo shutdown now
+   ```
+
+2. Insert the SD card into a Linux PC/laptop.
+
+3. From this repo on the PC/laptop, run:
+
+   ```bash
+   ./partition_beecam_sd_on_pc.sh
+   ```
+
+The PC/laptop script shrinks root to 10GiB, creates the exFAT DATA partition,
+updates the target card's `/etc/fstab`, copies `configs/` to `/data/configs`,
+replaces the target card's boot `config.txt`, and appends the display
+`video=HDMI-A-1:800x480@60D` argument to the target card's `cmdline.txt`.
+
+Keep `/home/pi/setup` on the Pi. The DATA initializer can use that repo copy as
+a fallback source for default configs if `/data/configs` does not already exist.
 
 ## Services
 
