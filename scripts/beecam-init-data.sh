@@ -5,7 +5,7 @@ DEV="/dev/mmcblk0"
 DATA_PART="${DEV}p3"
 MOUNTPOINT="/data"
 DATA_LABEL="DATA"
-SEED_DATA_DIR="/opt/beecam/default-data"
+SEED_CONFIG_DIR="/home/pi/setup/configs"
 FSTAB="/etc/fstab"
 MARKER="${MOUNTPOINT}/.beecam-data-initialized"
 
@@ -102,10 +102,12 @@ fi
 
 mkdir -p "${MOUNTPOINT}/logs" "${MOUNTPOINT}/images_and_labels"
 
-if [[ -d "${SEED_DATA_DIR}/configs" && ! -e "${MOUNTPOINT}/configs" ]]; then
-    log "copying default configs to ${MOUNTPOINT}/configs"
+if [[ -d "$SEED_CONFIG_DIR" && ! -e "${MOUNTPOINT}/configs" ]]; then
+    log "copying default configs from ${SEED_CONFIG_DIR} to ${MOUNTPOINT}/configs"
     mkdir -p "${MOUNTPOINT}/configs"
-    cp -a "${SEED_DATA_DIR}/configs/." "${MOUNTPOINT}/configs/"
+    cp -a "${SEED_CONFIG_DIR}/." "${MOUNTPOINT}/configs/"
+elif [[ ! -e "${MOUNTPOINT}/configs" ]]; then
+    log "default config directory ${SEED_CONFIG_DIR} was not found; /data/configs was not created"
 fi
 
 touch "$MARKER"

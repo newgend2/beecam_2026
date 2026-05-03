@@ -142,16 +142,13 @@ install_beecam_files() {
     sudo cp -a "${SCRIPT_DIR}/beecam" "${PI_HOME}/beecam"
     sudo chown -R pi:pi "${PI_HOME}/beecam"
 
-    log "Installing default DATA configs on root"
-    sudo mkdir -p /opt/beecam/default-data/configs
-    sudo cp -a "${SCRIPT_DIR}/configs/." /opt/beecam/default-data/configs/
-
     if mountpoint -q /data; then
         log "Copying configs to mounted /data"
         sudo mkdir -p /data/configs
         sudo cp -a "${SCRIPT_DIR}/configs/." /data/configs/
     else
-        warn "/data is not mounted; configs are staged in /opt/beecam/default-data/configs for first boot."
+        warn "/data is not mounted; first boot will copy configs from ${SCRIPT_DIR}/configs."
+        warn "Keep this repo at /home/pi/setup in the golden image."
     fi
 }
 
