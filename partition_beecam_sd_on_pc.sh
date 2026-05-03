@@ -5,7 +5,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_SIZE_MIB=10240
 ROOT_STAGING_FS_SIZE=9G
 DATA_LABEL=DATA
-VIDEO_ARG="video=HDMI-A-1:800x480@60D"
 
 log() {
     echo
@@ -32,26 +31,19 @@ partition_path() {
 
 cleanup() {
     set +e
-    if [[ -n "${BOOT_MNT:-}" ]] && mountpoint -q "$BOOT_MNT"; then sudo umount "$BOOT_MNT"; fi
     if [[ -n "${ROOT_MNT:-}" ]] && mountpoint -q "$ROOT_MNT"; then sudo umount "$ROOT_MNT"; fi
     if [[ -n "${DATA_MNT:-}" ]] && mountpoint -q "$DATA_MNT"; then sudo umount "$DATA_MNT"; fi
-    [[ -n "${BOOT_MNT:-}" ]] && rmdir "$BOOT_MNT" 2>/dev/null
     [[ -n "${ROOT_MNT:-}" ]] && rmdir "$ROOT_MNT" 2>/dev/null
     [[ -n "${DATA_MNT:-}" ]] && rmdir "$DATA_MNT" 2>/dev/null
 }
 trap cleanup EXIT
 
-for cmd in awk blkid blockdev cmp e2fsck mkfs.exfat mount mountpoint parted partprobe resize2fs sed udevadm; do
+for cmd in awk blkid blockdev e2fsck mkfs.exfat mount mountpoint parted partprobe resize2fs udevadm; do
     require_cmd "$cmd"
 done
 
 if [[ ! -d "${SCRIPT_DIR}/configs" ]]; then
     echo "Missing ${SCRIPT_DIR}/configs" >&2
-    exit 1
-fi
-
-if [[ ! -e "${SCRIPT_DIR}/boot_firmware/config.txt" ]]; then
-    echo "Missing ${SCRIPT_DIR}/boot_firmware/config.txt" >&2
     exit 1
 fi
 
@@ -65,12 +57,11 @@ if [[ ! -b "$DEV" ]]; then
     exit 1
 fi
 
-BOOT="$(partition_path "$DEV" 1)"
 ROOT="$(partition_path "$DEV" 2)"
 DATA="$(partition_path "$DEV" 3)"
 
-if [[ ! -b "$BOOT" || ! -b "$ROOT" ]]; then
-    echo "Expected $BOOT and $ROOT to exist" >&2
+if [[ ! -b "$ROOT" ]]; then
+    echo "Expected $ROOT to exist" >&2
     exit 1
 fi
 
@@ -88,7 +79,7 @@ if [[ "$CONFIRM" != "YES" ]]; then
 fi
 
 log "Unmounting SD card partitions"
-sudo umount "${BOOT}" "${ROOT}" "$DATA" 2>/dev/null || true
+sudo umount "${DEV}"* "$DATA" 2>/dev/null || true
 
 ROOT_START_MIB=$(sudo parted -m "$DEV" unit MiB print | awk -F: '$1 == "2" { gsub(/MiB/, "", $2); printf "%.0f", $2 }')
 ROOT_END_MIB=$((ROOT_START_MIB + ROOT_SIZE_MIB))
@@ -121,12 +112,10 @@ if [[ -z "$DATA_UUID" ]]; then
 fi
 
 ROOT_MNT="$(mktemp -d /tmp/beecam-root.XXXXXX)"
-BOOT_MNT="$(mktemp -d /tmp/beecam-boot.XXXXXX)"
 DATA_MNT="$(mktemp -d /tmp/beecam-data.XXXXXX)"
 
 log "Mounting new SD card filesystems"
 sudo mount "$ROOT" "$ROOT_MNT"
-sudo mount "$BOOT" "$BOOT_MNT"
 sudo mount "$DATA" "$DATA_MNT"
 
 log "Updating target /etc/fstab for /data"
@@ -141,12 +130,6 @@ sudo mkdir -p "${ROOT_MNT}/data"
 log "Copying configs to DATA partition"
 sudo mkdir -p "${DATA_MNT}/configs" "${DATA_MNT}/logs" "${DATA_MNT}/images_and_labels"
 sudo cp -a "${SCRIPT_DIR}/configs/." "${DATA_MNT}/configs/"
-
-log "Updating boot firmware files on SD card"
-sudo install -m 0644 "${SCRIPT_DIR}/boot_firmware/config.txt" "${BOOT_MNT}/config.txt"
-if ! grep -Fq "$VIDEO_ARG" "${BOOT_MNT}/cmdline.txt"; then
-    sudo sed -i "1 s/$/ ${VIDEO_ARG}/" "${BOOT_MNT}/cmdline.txt"
-fi
 
 log "Final SD card layout"
 lsblk -f "$DEV"

@@ -57,9 +57,8 @@ is done from a Linux PC/laptop after the Pi-side install.
    ```
 
 The PC/laptop script shrinks root to 10GiB, creates the exFAT DATA partition,
-updates the target card's `/etc/fstab`, copies `configs/` to `/data/configs`,
-replaces the target card's boot `config.txt`, and appends the display
-`video=HDMI-A-1:800x480@60D` argument to the target card's `cmdline.txt`.
+updates the target card's `/etc/fstab`, and copies `configs/` to
+`/data/configs`.
 
 Keep `/home/pi/setup` on the Pi. The DATA initializer can use that repo copy as
 a fallback source for default configs if `/data/configs` does not already exist.
