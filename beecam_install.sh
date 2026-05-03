@@ -40,6 +40,8 @@ install_apt_packages() {
     sudo apt-get update
     sudo DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        feh \
+        fbi \
         git \
         i2c-tools \
         imx500-all \
