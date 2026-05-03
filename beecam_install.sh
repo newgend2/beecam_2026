@@ -39,14 +39,12 @@ install_apt_packages() {
     sudo apt-get update
     sudo DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        feh \
-        fbi \
         git \
         i2c-tools \
         imx500-all \
-        python3-dev \
         python3-munkres \
         python3-opencv \
+        python3-pil \
         python3-pip \
         python3-smbus \
         wget
@@ -54,46 +52,11 @@ install_apt_packages() {
         python3-picamera2
 }
 
-make_pip_requirements() {
-    local req_file
-    req_file="$(mktemp)"
-
-    awk '
-        BEGIN {
-            skip["av"] = 1
-            skip["munkres"] = 1
-            skip["numpy"] = 1
-            skip["picamera2"] = 1
-            skip["pip"] = 1
-            skip["python-apt"] = 1
-            skip["setuptools"] = 1
-            skip["wheel"] = 1
-        }
-        NR <= 2 { next }
-        NF < 2 { next }
-        $1 ~ /^-+$/ { next }
-        {
-            name = $1
-            version = $2
-            key = tolower(name)
-            if (key in skip) {
-                next
-            }
-            print name "==" version
-        }
-    ' "${SCRIPT_DIR}/PIP_LIST.txt" > "$req_file"
-
-    echo "$req_file"
-}
-
 install_python_packages() {
-    log "Installing Python packages from PIP_LIST.txt"
-    require_file "${SCRIPT_DIR}/PIP_LIST.txt"
-
-    local req_file
-    req_file="$(make_pip_requirements)"
-    sudo python3 -m pip install --break-system-packages -r "$req_file"
-    rm -f "$req_file"
+    log "Installing BeeCam pip packages"
+    sudo python3 -m pip install --break-system-packages \
+        astral \
+        adafruit-circuitpython-ssd1306
 }
 
 install_wittypi() {
@@ -187,7 +150,6 @@ main() {
         exit 1
     fi
 
-    require_file "${SCRIPT_DIR}/PIP_LIST.txt"
     require_file "${SCRIPT_DIR}/configs/camera_config_final.ini"
     require_file "${SCRIPT_DIR}/configs/schedule.conf"
 

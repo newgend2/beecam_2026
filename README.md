@@ -23,7 +23,7 @@ The installer:
 
 - installs the DATA partition initializer
 - installs apt packages
-- installs Python packages from `PIP_LIST.txt` into system Python with `--break-system-packages`
+- installs `astral` and `adafruit-circuitpython-ssd1306` into system Python with `--break-system-packages`
 - installs Witty Pi software
 - replaces Witty Pi scripts with the repo versions
 - copies BeeCam code into `/home/pi/beecam`
