@@ -1,6 +1,7 @@
 *.img
 *.img.*
 *.zst
+prep_beecam_sd_10gb.sh
 __pycache__/
 *.pyc
 .DS_Store
