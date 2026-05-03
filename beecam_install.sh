@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo "ERROR: install failed at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_HOME="/home/pi"
@@ -61,14 +62,14 @@ install_python_packages() {
 
 install_wittypi() {
     log "Installing Witty Pi software"
-    local tmp_dir
-    tmp_dir="$(mktemp -d)"
-    wget -O "${tmp_dir}/install.sh" https://www.uugear.com/repo/WittyPi4/install.sh
-    (cd "$tmp_dir" && sudo sh install.sh)
-    rm -rf "$tmp_dir"
+    local install_script="${PI_HOME}/wittypi-install.sh"
+    wget -O "$install_script" https://www.uugear.com/repo/WittyPi4/install.sh
+    (cd "$PI_HOME" && sudo sh "$install_script")
+    rm -f "$install_script"
 
     if [[ ! -d "${PI_HOME}/wittypi" ]]; then
         echo "Expected ${PI_HOME}/wittypi after Witty Pi install, but it was not found." >&2
+        echo "Check whether the UUGear installer created wittypi somewhere else with: sudo find / -maxdepth 3 -type d -name wittypi 2>/dev/null" >&2
         exit 1
     fi
 
@@ -84,6 +85,7 @@ install_wittypi() {
         sudo install -m 0755 "${SCRIPT_DIR}/wittypi/${script}" "${PI_HOME}/wittypi/${script}"
     done
     sudo chown pi:pi "${PI_HOME}/wittypi/"*.sh
+    log "Witty Pi installed at ${PI_HOME}/wittypi"
 }
 
 install_beecam_files() {
@@ -128,6 +130,7 @@ install_boot_files() {
 
 install_systemd_services() {
     log "Installing systemd services"
+    sudo mkdir -p /etc/systemd/system
     for service in "${SCRIPT_DIR}"/systemd_services/*.service; do
         sudo install -m 0644 "$service" "/etc/systemd/system/$(basename "$service")"
     done
@@ -142,6 +145,7 @@ install_systemd_services() {
             sudo systemctl enable "$service_name"
         fi
     done
+    log "Systemd services installed in /etc/systemd/system"
 }
 
 main() {

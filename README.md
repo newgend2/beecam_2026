@@ -70,3 +70,24 @@ a fallback source for default configs if `/data/configs` does not already exist.
 from `wittypi/afterStartup.sh` and stops it from `wittypi/beforeShutdown.sh`.
 
 All other service files in `systemd_services/` are enabled by the installer.
+
+## Troubleshooting
+
+Systemd service files are installed to:
+
+```bash
+/etc/systemd/system
+```
+
+The directory `/etc/systemd/services` is not the normal systemd service
+directory on Raspberry Pi OS.
+
+If the installer stops early, rerun it and look for a line like:
+
+```bash
+ERROR: install failed at line ...
+```
+
+The installer is intentionally fail-fast, so if Witty Pi installation fails,
+later steps such as copying `/home/pi/beecam`, updating boot files, and
+installing services will not run.
