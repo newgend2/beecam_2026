@@ -1,16 +1,17 @@
 # BeeCam Setup
 
-This repo is intended to be cloned onto a Raspberry Pi at:
+## Quick Start
+
+On a fresh Raspberry Pi, paste this from the default `/home/pi` directory:
 
 ```bash
-/home/pi/setup
+sudo apt update && sudo apt install -y git && git clone https://github.com/newgend2/beecam_2026.git setup && cd setup && chmod +x beecam_install.sh scripts/beecam-init-data.sh && ./beecam_install.sh
 ```
 
-Then run:
+If the repo has already been cloned, rerun the installer with:
 
 ```bash
-cd /home/pi/setup
-./beecam_install.sh
+cd ~/setup && git pull && chmod +x beecam_install.sh scripts/beecam-init-data.sh && ./beecam_install.sh
 ```
 
 The installer:
