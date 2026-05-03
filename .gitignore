@@ -1,0 +1,6 @@
+*.img
+*.img.*
+*.zst
+__pycache__/
+*.pyc
+.DS_Store

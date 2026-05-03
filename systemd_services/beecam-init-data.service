@@ -1,0 +1,12 @@
+[Unit]
+Description=Initialize BeeCam DATA partition
+After=local-fs.target
+Before=beecam.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/beecam-init-data.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
