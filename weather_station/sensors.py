@@ -38,6 +38,11 @@ except Exception as exc:  # pragma: no cover - depends on Raspberry Pi hardware 
     AnalogIn = None
     ADS1115_IMPORT_ERROR = exc
 
+try:
+    from adafruit_ads1x15 import ads1x15 as ADS_COMMON
+except Exception:  # pragma: no cover - depends on installed ADS1x15 version
+    ADS_COMMON = None
+
 
 ErrorHandler = Callable[[str, str, BaseException | None], None]
 
@@ -180,14 +185,34 @@ class SensorSuite:
             self.error_handler(event_type, message, exc)
 
     def _ads_pin(self, pin_name: str):
-        key = pin_name.strip().upper()
-        if key and key[0].isdigit():
-            key = f"P{key}"
-        if not key.startswith("P"):
-            key = f"P{key}"
-        if ADS is None or not hasattr(ADS, key):
+        raw_key = pin_name.strip().upper()
+        if raw_key.startswith("A"):
+            raw_key = raw_key[1:]
+        elif raw_key.startswith("P"):
+            raw_key = raw_key[1:]
+
+        try:
+            pin_number = int(raw_key, 10)
+        except ValueError as exc:
+            raise ValueError(f"Unsupported ADS1115 pin '{pin_name}'") from exc
+
+        if pin_number not in {0, 1, 2, 3}:
             raise ValueError(f"Unsupported ADS1115 pin '{pin_name}'")
-        return getattr(ADS, key), key
+
+        legacy_key = f"P{pin_number}"
+        common_key = f"A{pin_number}"
+
+        if ADS is not None and hasattr(ADS, legacy_key):
+            return getattr(ADS, legacy_key), legacy_key
+
+        if ADS_COMMON is not None and hasattr(ADS_COMMON, "Pin"):
+            pin_enum = ADS_COMMON.Pin
+            if hasattr(pin_enum, common_key):
+                return getattr(pin_enum, common_key), legacy_key
+
+        # AnalogIn accepts integer channel IDs. This supports ADS1x15 library
+        # builds that no longer export ADS.P0/P1/P2/P3 from the ADS1115 module.
+        return pin_number, legacy_key
 
     def _init_temperature_humidity_sensor(self):
         if adafruit_sht31d is None:
