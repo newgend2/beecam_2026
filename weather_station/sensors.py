@@ -51,11 +51,22 @@ class WindCalibration:
 
 
 @dataclass(frozen=True)
+class WindAdcConfig:
+    address: int = 0x48
+    gain: float = 1.0
+    data_rate: int | None = None
+    mode: str = "differential"
+    positive_pin: str = "P0"
+    negative_pin: str = "P1"
+
+
+@dataclass(frozen=True)
 class WeatherReading:
     temperature_c: float | None
     relative_humidity_percent: float | None
     pressure_hpa: float | None
     wind_speed_m_s: float | None
+    wind_voltage_v: float | None = None
 
     def has_any_value(self) -> bool:
         return any(
@@ -122,12 +133,14 @@ class SensorSuite:
         self,
         i2c=None,
         wind_calibration: WindCalibration | None = None,
+        wind_adc_config: WindAdcConfig | None = None,
         error_handler: ErrorHandler | None = None,
         error_log_interval_sec: float = 60.0,
     ):
         self.error_handler = error_handler or _default_error_handler
         self.error_throttle = ErrorThrottle(error_log_interval_sec)
         self.wind_calibration = wind_calibration or WindCalibration()
+        self.wind_adc_config = wind_adc_config or WindAdcConfig()
         self.i2c = i2c
         self._owns_i2c = i2c is None
 
@@ -135,6 +148,7 @@ class SensorSuite:
         self._pressure = None
         self._wind_adc = None
         self._wind_channel = None
+        self.last_wind_voltage_v = None
 
         if self.i2c is None:
             if board is None:
@@ -164,6 +178,16 @@ class SensorSuite:
     ) -> None:
         if self.error_throttle.should_log(key):
             self.error_handler(event_type, message, exc)
+
+    def _ads_pin(self, pin_name: str):
+        key = pin_name.strip().upper()
+        if key and key[0].isdigit():
+            key = f"P{key}"
+        if not key.startswith("P"):
+            key = f"P{key}"
+        if ADS is None or not hasattr(ADS, key):
+            raise ValueError(f"Unsupported ADS1115 pin '{pin_name}'")
+        return getattr(ADS, key), key
 
     def _init_temperature_humidity_sensor(self):
         if adafruit_sht31d is None:
@@ -210,8 +234,34 @@ class SensorSuite:
             )
             return None
         try:
-            self._wind_adc = ADS.ADS1115(self.i2c)
-            return AnalogIn(self._wind_adc, ADS.P0, ADS.P1)
+            config = self.wind_adc_config
+            self._wind_adc = ADS.ADS1115(self.i2c, address=config.address)
+            self._wind_adc.gain = config.gain
+            if config.data_rate is not None:
+                self._wind_adc.data_rate = config.data_rate
+
+            positive_pin, positive_name = self._ads_pin(config.positive_pin)
+            mode = config.mode.strip().lower().replace("-", "_")
+            if mode in {"single", "single_ended", "singleended"}:
+                channel = AnalogIn(self._wind_adc, positive_pin)
+                pin_summary = positive_name
+            elif mode in {"diff", "differential"}:
+                negative_pin, negative_name = self._ads_pin(config.negative_pin)
+                channel = AnalogIn(self._wind_adc, positive_pin, negative_pin)
+                pin_summary = f"{positive_name}-{negative_name}"
+            else:
+                raise ValueError(f"Unsupported wind ADC mode '{config.mode}'")
+
+            self._emit(
+                "ads1115_init_ok",
+                "sensor_status",
+                (
+                    "Wind sensor initialized "
+                    f"address=0x{config.address:02x} mode={mode} pins={pin_summary} "
+                    f"gain={config.gain} data_rate={config.data_rate or 'default'}"
+                ),
+            )
+            return channel
         except Exception as exc:
             self._emit("ads1115_init", "sensor_init_error", "Wind sensor initialization failed", exc)
             return None
@@ -232,9 +282,15 @@ class SensorSuite:
 
     def _read_wind_speed(self) -> float | None:
         if self._wind_channel is None:
+            self._emit(
+                "wind_channel_missing",
+                "sensor_read_error",
+                "Wind ADC channel is unavailable; check earlier ADS1115 initialization errors",
+            )
             return None
         try:
             voltage = self._wind_channel.voltage
+            self.last_wind_voltage_v = voltage
             return adc_to_wind_speed(voltage, self.wind_calibration)
         except Exception as exc:
             self._emit("wind_speed_read", "sensor_read_error", "Could not read wind speed", exc)
@@ -250,6 +306,17 @@ class SensorSuite:
             ),
             pressure_hpa=_round_or_none(self._read_attr(self._pressure, "pressure", "pressure")),
             wind_speed_m_s=_round_or_none(self._read_wind_speed()),
+            wind_voltage_v=_round_or_none(self.last_wind_voltage_v, digits=4),
+        )
+
+    def wind_debug_summary(self) -> str:
+        config = self.wind_adc_config
+        channel_state = "ready" if self._wind_channel is not None else "unavailable"
+        voltage = "--" if self.last_wind_voltage_v is None else f"{self.last_wind_voltage_v:.4f}V"
+        return (
+            f"ADS1115 address=0x{config.address:02x} mode={config.mode} "
+            f"pins={config.positive_pin}-{config.negative_pin} gain={config.gain} "
+            f"channel={channel_state} last_voltage={voltage}"
         )
 
     def deinit(self) -> None:

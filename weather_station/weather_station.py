@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from sensors import ErrorThrottle, SensorSuite, WeatherReading, WindCalibration
+from sensors import ErrorThrottle, SensorSuite, WeatherReading, WindAdcConfig, WindCalibration
 
 
 try:
@@ -55,6 +55,7 @@ class AppConfig:
     exception_log_path: str
 
     wind_calibration: WindCalibration
+    wind_adc_config: WindAdcConfig
     sensor_error_log_interval_sec: float
 
 
@@ -93,6 +94,14 @@ def read_config(config_path: str) -> AppConfig:
     def getbool(section: str, key: str, fallback: bool = False) -> bool:
         return str_to_bool(parser.get(section, key, fallback=None), fallback)
 
+    def getint_auto(section: str, key: str, fallback: int) -> int:
+        raw = parser.get(section, key, fallback=str(fallback)).strip()
+        return int(raw, 0)
+
+    def getoptional_int_auto(section: str, key: str) -> int | None:
+        raw = parser.get(section, key, fallback="").strip()
+        return int(raw, 0) if raw else None
+
     unit_name = get("weather", "unit_name", fallback="").strip() or hostname
 
     return AppConfig(
@@ -117,6 +126,14 @@ def read_config(config_path: str) -> AppConfig:
             min_voltage=getfloat("wind", "min_voltage", fallback=0.4),
             max_voltage=getfloat("wind", "max_voltage", fallback=2.0),
             max_speed_m_s=getfloat("wind", "max_speed_m_s", fallback=32.4),
+        ),
+        wind_adc_config=WindAdcConfig(
+            address=getint_auto("wind", "ads_address", fallback=0x48),
+            gain=getfloat("wind", "ads_gain", fallback=1.0),
+            data_rate=getoptional_int_auto("wind", "ads_data_rate"),
+            mode=get("wind", "ads_mode", fallback="differential"),
+            positive_pin=get("wind", "ads_positive_pin", fallback="P0"),
+            negative_pin=get("wind", "ads_negative_pin", fallback="P1"),
         ),
         sensor_error_log_interval_sec=getfloat("sensors", "error_log_interval_sec", fallback=60.0),
     )
@@ -239,6 +256,7 @@ class WeatherDataWriter:
         "relative_humidity_percent",
         "pressure_hpa",
         "wind_speed_m_s",
+        "wind_voltage_v",
     ]
 
     def __init__(self, save_root: str, station_name: str):
@@ -265,12 +283,26 @@ class WeatherDataWriter:
         except Exception:
             return 0
 
+    def fieldnames_for_path(self, path: Path) -> list[str]:
+        if not path.exists() or path.stat().st_size == 0:
+            return self.fieldnames
+        try:
+            with open(path, "r", encoding="utf-8", newline="") as f:
+                first_line = f.readline().strip()
+            existing_fieldnames = [name.strip() for name in first_line.split("\t") if name.strip()]
+            if "timestamp" in existing_fieldnames and "station_name" in existing_fieldnames:
+                return existing_fieldnames
+        except Exception:
+            pass
+        return self.fieldnames
+
     def write(self, reading: WeatherReading, timestamp: datetime | None = None) -> Path:
         timestamp = timestamp or datetime.now()
         day_dir = self.day_dir(timestamp)
         day_dir.mkdir(parents=True, exist_ok=True)
         path = self.file_path(timestamp)
         new_file = not path.exists() or path.stat().st_size == 0
+        fieldnames = self.fieldnames if new_file else self.fieldnames_for_path(path)
 
         row = {
             "timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S"),
@@ -279,10 +311,11 @@ class WeatherDataWriter:
             "relative_humidity_percent": format_data_value(reading.relative_humidity_percent),
             "pressure_hpa": format_data_value(reading.pressure_hpa),
             "wind_speed_m_s": format_data_value(reading.wind_speed_m_s),
+            "wind_voltage_v": "" if reading.wind_voltage_v is None else f"{reading.wind_voltage_v:.4f}",
         }
 
         with open(path, "a", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=self.fieldnames, delimiter="\t")
+            writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t", extrasaction="ignore")
             if new_file:
                 writer.writeheader()
             writer.writerow(row)
@@ -392,7 +425,8 @@ class OledWorker(threading.Thread):
                     f"RH {display_value(reading.relative_humidity_percent, '%')}"
                 )
                 line3 = f"P {display_value(reading.pressure_hpa, 'hPa')}"
-                line4 = f"Wind {display_value(reading.wind_speed_m_s, 'm/s')}"
+                wind_voltage = "--V" if reading.wind_voltage_v is None else f"{reading.wind_voltage_v:.3f}V"
+                line4 = f"W {display_value(reading.wind_speed_m_s, 'm/s')} {wind_voltage}"
 
             line5 = f"SD {disk_percent}% R {readings_today}"
             if state in {"FULL", "ERROR", "RESTART"}:
@@ -519,9 +553,11 @@ def main() -> None:
     try:
         sensors = SensorSuite(
             wind_calibration=cfg.wind_calibration,
+            wind_adc_config=cfg.wind_adc_config,
             error_handler=log_exception_event,
             error_log_interval_sec=cfg.sensor_error_log_interval_sec,
         )
+        log_exception_event("sensor_status", sensors.wind_debug_summary())
 
         with status_lock:
             if not status.storage_locked:

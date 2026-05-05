@@ -17,6 +17,10 @@ Exception events are written to:
 /data/logs/weather_station_exception_log.csv
 ```
 
+The weather data file also includes `wind_voltage_v` so wind-speed blanks can be
+distinguished from a working ADC that is simply reading below the calibrated
+wind threshold.
+
 ## Quick Start
 
 On a fresh Raspberry Pi, paste this from the default `/home/pi` directory:
@@ -53,3 +57,17 @@ Witty Pi uses the same scheduling flow as BeeCam:
 
 `weather-station.service` is installed but intentionally disabled; Witty Pi
 starts and stops it.
+
+## Wind Sensor Check
+
+To test the ADS1115 wind path directly on the Pi:
+
+```bash
+cd /home/pi/weather_station
+python3 wind_test.py --config /data/configs/weather_station_config.ini --count 20
+```
+
+If the test reports that the ADS1115 channel is unavailable, check
+`/data/logs/weather_station_exception_log.csv` for `ads1115_*` events. If the
+voltage prints but wind speed stays `0.00 m/s`, the ADC is working and the value
+is below the configured calibration threshold in `/data/configs/weather_station_config.ini`.
