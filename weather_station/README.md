@@ -19,18 +19,22 @@ Exception events are written to:
 
 ## Quick Start
 
-On a fresh Raspberry Pi, clone the setup repo and run the weather-station
-installer from this folder:
+On a fresh Raspberry Pi, paste this from the default `/home/pi` directory:
 
 ```bash
-cd ~/setup/weather_station
-chmod +x install_weather_station.sh scripts/weather-station-init-data.sh partition_weather_station_sd_on_pc.sh
-./install_weather_station.sh
+sudo apt update && sudo apt install -y git && git clone https://github.com/newgend2/beecam_2026.git setup && cd setup/weather_station && chmod +x install_weather_station.sh scripts/weather-station-init-data.sh partition_weather_station_sd_on_pc.sh && ./install_weather_station.sh
+```
+
+If the repo has already been cloned, rerun the installer with:
+
+```bash
+cd ~/setup && git pull && cd weather_station && chmod +x install_weather_station.sh scripts/weather-station-init-data.sh partition_weather_station_sd_on_pc.sh && ./install_weather_station.sh
 ```
 
 Then shut down, move the card to a Linux PC/laptop, and run:
 
 ```bash
+cd /path/to/beecam_2026/weather_station
 ./partition_weather_station_sd_on_pc.sh
 ```
 
