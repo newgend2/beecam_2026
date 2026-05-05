@@ -78,9 +78,6 @@ Systemd service files are installed to:
 /etc/systemd/system
 ```
 
-The directory `/etc/systemd/services` is not the normal systemd service
-directory on Raspberry Pi OS.
-
 If the installer stops early, rerun it and look for a line like:
 
 ```bash
