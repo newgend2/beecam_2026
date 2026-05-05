@@ -1,0 +1,12 @@
+[Unit]
+Description=Initialize Weather Station DATA partition
+After=local-fs.target
+Before=weather-station.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/weather-station-init-data.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

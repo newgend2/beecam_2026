@@ -1,0 +1,20 @@
+[Unit]
+Description=Weather station sensor logging service
+After=multi-user.target weather-station-init-data.service
+Requires=weather-station-init-data.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/weather_station
+ExecStart=/usr/bin/python3 /home/pi/weather_station/weather_station.py --config /data/configs/weather_station_config.ini
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

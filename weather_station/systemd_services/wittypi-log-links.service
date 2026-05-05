@@ -1,0 +1,16 @@
+[Unit]
+Description=Create WittyPi log symlinks on /data
+After=local-fs.target weather-station-init-data.service
+Requires=weather-station-init-data.service
+Before=wittypi.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c '\
+  mkdir -p /data/logs && \
+  [ -L /home/pi/wittypi/wittyPi.log ]  || { rm -f /home/pi/wittypi/wittyPi.log;  ln -s /data/logs/wittyPi.log  /home/pi/wittypi/wittyPi.log; } && \
+  [ -L /home/pi/wittypi/schedule.log ] || { rm -f /home/pi/wittypi/schedule.log; ln -s /data/logs/schedule.log /home/pi/wittypi/schedule.log; }'
+
+[Install]
+WantedBy=multi-user.target
