@@ -22,6 +22,26 @@ set -euo pipefail
 
 die() { echo "Error: $*" >&2; exit 1; }
 
+get_current_hostname() {
+    local h
+    h=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'unknown')
+    h=${h%%.*}
+    h=${h//[[:space:]]/}
+    [[ -n "$h" ]] || h="unknown"
+    printf '%s\n' "$h"
+}
+
+get_current_user() {
+    local u
+    u=${SUDO_USER:-${USER:-}}
+    if [[ -z "$u" ]]; then
+        u=$(id -un 2>/dev/null || printf 'user')
+    fi
+    u=${u//[[:space:]]/}
+    [[ -n "$u" ]] || u="user"
+    printf '%s\n' "$u"
+}
+
 usage() {
     sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
@@ -29,8 +49,9 @@ usage() {
 
 # ── arguments ────────────────────────────────────────────────────────────────
 
-DEFAULT_SRC="/media/wlab/DATA"
-DEFAULT_DEST="/media/wlab/T7 Shield"
+CURRENT_USER=$(get_current_user)
+DEFAULT_SRC="/media/${CURRENT_USER}/DATA"
+DEFAULT_DEST="/media/${CURRENT_USER}/T7 Shield"
 
 if [[ $# -eq 0 ]]; then
     SRC="$DEFAULT_SRC"
@@ -63,11 +84,17 @@ fi
 
 # ── read camera hostname ──────────────────────────────────────────────────────
 
-if [[ -f "$SRC/hostname" ]]; then
+CURRENT_HOSTNAME=$(get_current_hostname)
+
+if [[ -s "$SRC/hostname" ]]; then
     CAM_HOSTNAME=$(tr -d '[:space:]' < "$SRC/hostname")
 else
-    echo "Warning: $SRC/hostname not found; using 'unknown'."
-    CAM_HOSTNAME="unknown"
+    CAM_HOSTNAME="$CURRENT_HOSTNAME"
+    if printf '%s\n' "$CAM_HOSTNAME" > "$SRC/hostname"; then
+        echo "Wrote current hostname to $SRC/hostname."
+    else
+        echo "Warning: could not write $SRC/hostname; archive will use current hostname in its filename."
+    fi
 fi
 
 echo "Camera: $CAM_HOSTNAME"
