@@ -93,11 +93,16 @@ def read_config(config_path: str) -> AppConfig:
 
     postprocess = get("model", "postprocess", fallback="").strip() or None
 
+    # The preview utility is used for focus and stale-detection tuning, so make
+    # its displayed stream match the still capture resolution when available.
+    preview_width = getint("camera", "still_width", fallback=getint("camera", "preview_width", fallback=4056))
+    preview_height = getint("camera", "still_height", fallback=getint("camera", "preview_height", fallback=3040))
+
     return AppConfig(
         model_path=os.path.expanduser(get("model", "model_path")),
         labels_path=os.path.expanduser(get("model", "labels_path")),
-        preview_width=getint("camera", "preview_width", fallback=640),
-        preview_height=getint("camera", "preview_height", fallback=480),
+        preview_width=preview_width,
+        preview_height=preview_height,
         fps=getint("camera", "fps", fallback=10),
         threshold=getfloat("model", "threshold", fallback=0.30),
         iou=getfloat("model", "iou", fallback=0.65),
@@ -396,6 +401,58 @@ def annotate_stale_detections(detections):
     return detections
 
 
+def clamp_int(value, minimum, maximum):
+    return max(minimum, min(maximum, int(round(value))))
+
+
+def draw_scale(image) -> float:
+    height, width = image.shape[:2]
+    return max(1.0, min(width, height) / 720.0)
+
+
+def draw_center_threshold_guides(image):
+    if not cfg.stale_detection_enabled or cfg.stale_center_threshold <= 0:
+        return
+
+    now_mono = time.monotonic()
+    height, width = image.shape[:2]
+    scale = draw_scale(image)
+    guide_thickness = max(1, int(round(scale)))
+    marker_size = max(10, int(round(10 * scale)))
+    half_width = cfg.stale_center_threshold * cfg.preview_width
+    half_height = cfg.stale_center_threshold * cfg.preview_height
+
+    for track in list(stale_tracks):
+        if now_mono - track.last_seen > cfg.stale_expire_sec:
+            continue
+
+        x, y, w, h = _box_tuple(track.box)
+        cx = x + (w / 2.0)
+        cy = y + (h / 2.0)
+        color = (0, 255, 255)
+        if now_mono - track.first_seen >= cfg.stale_detection_sec:
+            color = (0, 165, 255)
+
+        left = clamp_int(cx - half_width, 0, width - 1)
+        right = clamp_int(cx + half_width, 0, width - 1)
+        top = clamp_int(cy - half_height, 0, height - 1)
+        bottom = clamp_int(cy + half_height, 0, height - 1)
+        center = (
+            clamp_int(cx, 0, width - 1),
+            clamp_int(cy, 0, height - 1),
+        )
+
+        cv2.rectangle(image, (left, top), (right, bottom), color, guide_thickness)
+        cv2.drawMarker(
+            image,
+            center,
+            color,
+            markerType=cv2.MARKER_CROSS,
+            markerSize=marker_size,
+            thickness=guide_thickness,
+        )
+
+
 @lru_cache
 def get_labels():
     labels = intrinsics.labels
@@ -405,12 +462,16 @@ def get_labels():
 
 
 def draw_detections(request, stream="main"):
-    detections = last_results
-    if not detections:
-        return
+    detections = last_results or []
 
     labels = get_labels()
     with MappedArray(request, stream) as m:
+        scale = draw_scale(m.array)
+        box_thickness = max(2, int(round(2 * scale)))
+        font_scale = min(1.2, max(0.5, 0.5 * scale))
+        font_thickness = max(1, int(round(scale)))
+        draw_center_threshold_guides(m.array)
+
         for d in detections:
             x, y, w, h = [int(v) for v in d.box]
             label = labels[d.category] if 0 <= d.category < len(labels) else str(d.category)
@@ -420,16 +481,16 @@ def draw_detections(request, stream="main"):
             else:
                 color = (0, 255, 0)
                 text = f"{label} {d.conf:.2f} {d.track_age_sec:.1f}s"
-            cv2.rectangle(m.array, (x, y), (x + w, y + h), color, 2)
+            cv2.rectangle(m.array, (x, y), (x + w, y + h), color, box_thickness)
             cv2.putText(
                 m.array, text, (x + 4, max(14, y + 14)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, font_thickness
             )
 
         if time.monotonic() < last_saved_message_until:
             cv2.putText(
                 m.array, last_saved_message, (20, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale * 1.4, (0, 255, 255), box_thickness
             )
 
 
@@ -464,6 +525,7 @@ def main():
 
     intrinsics.update_with_defaults()
     print(f"Preview detection config: postprocess={intrinsics.postprocess} threshold={cfg.threshold} iou={cfg.iou}")
+    print(f"Preview stream: {cfg.preview_width}x{cfg.preview_height} at {cfg.fps} fps")
 
     picam2 = Picamera2(imx500.camera_num)
     ae_mode = ae_exposure_mode_from_string(cfg.ae_exposure_mode)

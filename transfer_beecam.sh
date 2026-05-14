@@ -145,7 +145,7 @@ fi
 # ── collect source data to include ────────────────────────────────────────────
 
 INCLUDE=()
-for item in images_and_labels logs configs hostname; do
+for item in images_and_labels logs configs hostname update_backups; do
     if [[ -e "$SRC/$item" ]]; then
         INCLUDE+=("$item")
     else
@@ -179,7 +179,7 @@ echo ""
 echo "Plan:"
 echo "  1. Zip ${INCLUDE[*]} → $DEST_ZIP"
 echo "  2. Verify zip integrity"
-echo "  3. Delete from SD:   images_and_labels/  logs/"
+echo "  3. Delete from SD:   images_and_labels/  logs/  update_backups/"
 echo "  4. Keep on SD:       configs/  hostname"
 echo ""
 read -r -p "Proceed? [y/N] " confirm
@@ -235,7 +235,7 @@ echo ""
 # ── delete transferred data from SD ──────────────────────────────────────────
 
 echo "Cleaning up SD card..."
-for d in images_and_labels logs; do
+for d in images_and_labels logs update_backups; do
     if [[ -d "$SRC/$d" ]]; then
         rm -rf "${SRC:?}/$d"
         echo "  Deleted: $d/"
