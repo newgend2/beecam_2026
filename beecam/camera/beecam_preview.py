@@ -23,6 +23,8 @@ last_results = None
 last_detections = []
 last_saved_message = ""
 last_saved_message_until = 0.0
+stale_tracks = []
+stale_next_track_id = 1
 
 
 @dataclass
@@ -40,9 +42,27 @@ class AppConfig:
     ignore_dash_labels: bool
     preserve_aspect_ratio: bool
     postprocess: str | None
+    stale_detection_enabled: bool
+    stale_detection_sec: float
+    stale_iou_threshold: float
+    stale_center_threshold: float
+    stale_expire_sec: float
+    stale_area_ratio_min: float
+    stale_area_ratio_max: float
     ae_enable: bool
     ae_exposure_mode: str
     preview_backend: str
+
+
+@dataclass
+class StaleTrack:
+    id: int
+    category: int
+    box: tuple
+    conf: float
+    first_seen: float
+    last_seen: float
+    suppressed_count: int = 0
 
 
 def str_to_bool(value: str, default: bool = False) -> bool:
@@ -87,6 +107,13 @@ def read_config(config_path: str) -> AppConfig:
         ignore_dash_labels=getbool("model", "ignore_dash_labels", fallback=False),
         preserve_aspect_ratio=getbool("model", "preserve_aspect_ratio", fallback=False),
         postprocess=postprocess,
+        stale_detection_enabled=getbool("stale_detection", "enabled", fallback=True),
+        stale_detection_sec=getfloat("stale_detection", "detection_sec", fallback=7.0),
+        stale_iou_threshold=getfloat("stale_detection", "iou_threshold", fallback=0.50),
+        stale_center_threshold=getfloat("stale_detection", "center_threshold", fallback=0.10),
+        stale_expire_sec=getfloat("stale_detection", "expire_sec", fallback=3.0),
+        stale_area_ratio_min=getfloat("stale_detection", "area_ratio_min", fallback=0.50),
+        stale_area_ratio_max=getfloat("stale_detection", "area_ratio_max", fallback=2.00),
         ae_enable=getbool("exposure", "ae_enable", fallback=True),
         ae_exposure_mode=get("exposure", "ae_exposure_mode", fallback="short").strip().lower(),
         preview_backend=get("debug", "preview_backend", fallback="qt").strip().lower(),
@@ -118,6 +145,9 @@ class Detection:
         self.category = int(category)
         self.conf = float(conf)
         self.box = imx500.convert_inference_coords(coords, metadata, picam2)
+        self.is_stale = False
+        self.track_age_sec = 0.0
+        self.track_id = None
 
 
 def parse_detections(metadata: dict):
@@ -148,12 +178,222 @@ def parse_detections(metadata: dict):
         if intrinsics.bbox_order == "xy":
             boxes = boxes[:, [1, 0, 3, 2]]
 
+        keep = class_aware_nms(boxes, scores, classes)
+        boxes = [boxes[i] for i in keep]
+        scores = [scores[i] for i in keep]
+        classes = [classes[i] for i in keep]
+
+    if intrinsics.postprocess == "nanodet":
+        detections_iter = [
+            (box, score, category)
+            for box, score, category in zip(boxes, scores, classes)
+            if score > cfg.threshold
+        ]
+    else:
+        detections_iter = zip(boxes, scores, classes)
+
     last_detections = [
         Detection(box, category, score, metadata)
-        for box, score, category in zip(boxes, scores, classes)
-        if score > cfg.threshold
+        for box, score, category in detections_iter
     ]
     return last_detections
+
+
+def inference_box_iou(a, b) -> float:
+    ay1, ax1, ay2, ax2 = [float(v) for v in a]
+    by1, bx1, by2, bx2 = [float(v) for v in b]
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    intersection = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - intersection
+    if union <= 0:
+        return 0.0
+    return intersection / union
+
+
+def class_aware_nms(boxes, scores, classes):
+    candidates = [
+        i for i, score in enumerate(scores)
+        if float(score) > cfg.threshold
+    ]
+    candidates.sort(key=lambda i: float(scores[i]), reverse=True)
+
+    keep = []
+    while candidates and len(keep) < cfg.max_detections:
+        current = candidates.pop(0)
+        keep.append(current)
+
+        remaining = []
+        for candidate in candidates:
+            same_class = int(classes[candidate]) == int(classes[current])
+            overlaps = inference_box_iou(boxes[candidate], boxes[current]) > cfg.iou
+            if same_class and overlaps:
+                continue
+            remaining.append(candidate)
+        candidates = remaining
+
+    return keep
+
+
+def metadata_has_current_inference(metadata: dict) -> bool:
+    output_tensor = metadata.get("CnnOutputTensor")
+    if output_tensor is None:
+        return False
+    try:
+        return len(output_tensor) > 0
+    except TypeError:
+        return True
+
+
+def _box_tuple(box) -> tuple:
+    x, y, w, h = box
+    return float(x), float(y), float(w), float(h)
+
+
+def box_area(box) -> float:
+    _x, _y, w, h = _box_tuple(box)
+    return max(0.0, w) * max(0.0, h)
+
+
+def box_iou(a, b) -> float:
+    ax, ay, aw, ah = _box_tuple(a)
+    bx, by, bw, bh = _box_tuple(b)
+    ax2, ay2 = ax + aw, ay + ah
+    bx2, by2 = bx + bw, by + bh
+    ix1 = max(ax, bx)
+    iy1 = max(ay, by)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    intersection = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    union = box_area(a) + box_area(b) - intersection
+    if union <= 0:
+        return 0.0
+    return intersection / union
+
+
+def center_distance_norm(a, b) -> float:
+    ax, ay, aw, ah = _box_tuple(a)
+    bx, by, bw, bh = _box_tuple(b)
+    acx = ax + (aw / 2.0)
+    acy = ay + (ah / 2.0)
+    bcx = bx + (bw / 2.0)
+    bcy = by + (bh / 2.0)
+    dx = abs(acx - bcx) / max(1.0, float(cfg.preview_width))
+    dy = abs(acy - bcy) / max(1.0, float(cfg.preview_height))
+    return max(dx, dy)
+
+
+def area_ratio(current, tracked) -> float:
+    tracked_area = box_area(tracked)
+    if tracked_area <= 0:
+        return float("inf")
+    return box_area(current) / tracked_area
+
+
+def expire_stale_tracks(now_mono: float):
+    global stale_tracks
+    stale_tracks = [
+        track for track in stale_tracks
+        if now_mono - track.last_seen <= cfg.stale_expire_sec
+    ]
+
+
+def find_stale_track(detection, excluded_track_ids=None):
+    if excluded_track_ids is None:
+        excluded_track_ids = set()
+
+    best = None
+    best_metrics = None
+    best_score = None
+    for track in stale_tracks:
+        if track.id in excluded_track_ids or track.category != detection.category:
+            continue
+
+        iou_value = box_iou(detection.box, track.box)
+        center_value = center_distance_norm(detection.box, track.box)
+        ratio_value = area_ratio(detection.box, track.box)
+        center_match = (
+            center_value <= cfg.stale_center_threshold
+            and cfg.stale_area_ratio_min <= ratio_value <= cfg.stale_area_ratio_max
+        )
+        if iou_value < cfg.stale_iou_threshold and not center_match:
+            continue
+
+        score = iou_value - center_value
+        if best_score is None or score > best_score:
+            best = track
+            best_metrics = (iou_value, center_value, ratio_value)
+            best_score = score
+
+    return best, best_metrics
+
+
+def create_stale_track(detection, now_mono: float) -> StaleTrack:
+    global stale_next_track_id
+    track = StaleTrack(
+        id=stale_next_track_id,
+        category=int(detection.category),
+        box=_box_tuple(detection.box),
+        conf=float(detection.conf),
+        first_seen=now_mono,
+        last_seen=now_mono,
+    )
+    stale_next_track_id += 1
+    stale_tracks.append(track)
+    return track
+
+
+def update_track_from_detection(track: StaleTrack, detection, now_mono: float):
+    track.box = _box_tuple(detection.box)
+    track.conf = float(detection.conf)
+    track.last_seen = now_mono
+
+
+def annotate_stale_detections(detections):
+    if not cfg.stale_detection_enabled:
+        return detections
+
+    now_mono = time.monotonic()
+    expire_stale_tracks(now_mono)
+    matched_track_ids = set()
+
+    for detection in detections:
+        detection.is_stale = False
+        detection.track_age_sec = 0.0
+        detection.track_id = None
+
+        track, metrics = find_stale_track(detection, matched_track_ids)
+        if track is None:
+            track = create_stale_track(detection, now_mono)
+            matched_track_ids.add(track.id)
+            detection.track_id = track.id
+            continue
+
+        matched_track_ids.add(track.id)
+        _iou_value, _center_value, ratio_value = metrics
+        stale_age = now_mono - track.first_seen
+        size_change = (
+            ratio_value < cfg.stale_area_ratio_min
+            or ratio_value > cfg.stale_area_ratio_max
+        )
+
+        if size_change:
+            track.first_seen = now_mono
+            track.suppressed_count = 0
+            stale_age = 0.0
+        elif stale_age >= cfg.stale_detection_sec:
+            detection.is_stale = True
+            track.suppressed_count += 1
+
+        detection.track_age_sec = stale_age
+        detection.track_id = track.id
+        update_track_from_detection(track, detection, now_mono)
+
+    return detections
 
 
 @lru_cache
@@ -174,11 +414,16 @@ def draw_detections(request, stream="main"):
         for d in detections:
             x, y, w, h = [int(v) for v in d.box]
             label = labels[d.category] if 0 <= d.category < len(labels) else str(d.category)
-            text = f"{label} ({d.conf:.2f})"
-            cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            if d.is_stale:
+                color = (0, 0, 255)
+                text = f"STALE {label} {d.conf:.2f} {d.track_age_sec:.1f}s"
+            else:
+                color = (0, 255, 0)
+                text = f"{label} {d.conf:.2f} {d.track_age_sec:.1f}s"
+            cv2.rectangle(m.array, (x, y), (x + w, y + h), color, 2)
             cv2.putText(
                 m.array, text, (x + 4, max(14, y + 14)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1
             )
 
         if time.monotonic() < last_saved_message_until:
@@ -190,7 +435,7 @@ def draw_detections(request, stream="main"):
 
 def get_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--config", default="camera_config.ini")
+    p.add_argument("--config", default="/data/configs/camera_config_final.ini")
     return p.parse_args()
 
 
@@ -218,6 +463,7 @@ def main():
             intrinsics.labels = f.read().splitlines()
 
     intrinsics.update_with_defaults()
+    print(f"Preview detection config: postprocess={intrinsics.postprocess} threshold={cfg.threshold} iou={cfg.iou}")
 
     picam2 = Picamera2(imx500.camera_num)
     ae_mode = ae_exposure_mode_from_string(cfg.ae_exposure_mode)
@@ -244,6 +490,8 @@ def main():
         while True:
             metadata = picam2.capture_metadata()
             results = parse_detections(metadata)
+            if metadata_has_current_inference(metadata):
+                results = annotate_stale_detections(results)
             last_results = results
             if results:
                 last_saved_message = f"Detected {len(results)} object(s)"

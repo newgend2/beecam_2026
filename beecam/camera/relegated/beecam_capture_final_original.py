@@ -3,7 +3,6 @@
 import argparse
 import configparser
 import os
-import queue
 import re
 import shutil
 import signal
@@ -37,27 +36,11 @@ intrinsics = None
 cfg = None
 still_config = None
 preview_config = None
-save_queue = None
-save_worker = None
-save_stop_event = None
-
-CAPTURE_STREAM = "main"
-# IMX500 inference runs on the sensor's input tensor/ROI. This stream is the
-# Picamera2 output used for preview/debug coordinates, not the model input.
-DETECTION_STREAM = "lores"
 
 capture_in_progress = False
 last_capture_time = 0.0
 last_detections = []
 last_timelapse_time = 0.0
-last_save_queue_full_log = 0.0
-async_saves_completed = 0
-async_saves_failed = 0
-async_saves_dropped = 0
-stale_tracks = []
-stale_next_track_id = 1
-stale_suppressed_total = 0
-last_stale_suppression_log = 0.0
 
 hostname = socket.gethostname()
 
@@ -74,7 +57,6 @@ class AppConfig:
     still_height: int
     buffer_count_preview: int
     buffer_count_still: int
-    async_save_queue_size: int
     fps: int
     capture_cooldown_sec: float
 
@@ -86,15 +68,6 @@ class AppConfig:
     ignore_dash_labels: bool
     preserve_aspect_ratio: bool
     postprocess: str | None
-
-    stale_detection_enabled: bool
-    stale_detection_sec: float
-    stale_iou_threshold: float
-    stale_center_threshold: float
-    stale_expire_sec: float
-    stale_area_ratio_min: float
-    stale_area_ratio_max: float
-    stale_log_interval_sec: float
 
     ae_enable: bool
     ae_exposure_mode: str
@@ -114,7 +87,6 @@ class AppConfig:
     draw_detections: bool
     show_saved_overlay: bool
     preview_backend: str | None
-    fps_log_interval_sec: float
 
     timelapse_enabled: bool
     timelapse_interval_sec: float
@@ -142,31 +114,6 @@ class SharedStatus:
 status = SharedStatus()
 status_lock = threading.Lock()
 log_lock = threading.Lock()
-save_stats_lock = threading.Lock()
-
-
-@dataclass
-class SaveJob:
-    stem: str
-    image_path: str
-    label_path: str
-    detections: list | None
-    request: object
-    queued_monotonic: float
-    queued_wall: str
-    sensor_timestamp_ns: int | None
-
-
-@dataclass
-class StaleTrack:
-    id: int
-    category: int
-    box: tuple
-    conf: float
-    first_seen: float
-    last_seen: float
-    last_capture: float
-    suppressed_count: int = 0
 
 
 def log_exception_event(event_type: str, message: str, exc: BaseException | None = None):
@@ -244,7 +191,6 @@ def read_config(config_path: str) -> AppConfig:
         still_height=getint("camera", "still_height", fallback=1520),
         buffer_count_preview=getint("camera", "buffer_count_preview", fallback=4),
         buffer_count_still=getint("camera", "buffer_count_still", fallback=1),
-        async_save_queue_size=getint("camera", "async_save_queue_size", fallback=2),
         fps=getint("camera", "fps", fallback=10),
         capture_cooldown_sec=getfloat("camera", "capture_cooldown_sec", fallback=0.1),
 
@@ -256,15 +202,6 @@ def read_config(config_path: str) -> AppConfig:
         ignore_dash_labels=getbool("model", "ignore_dash_labels", fallback=False),
         preserve_aspect_ratio=getbool("model", "preserve_aspect_ratio", fallback=False),
         postprocess=postprocess,
-
-        stale_detection_enabled=getbool("stale_detection", "enabled", fallback=True),
-        stale_detection_sec=getfloat("stale_detection", "detection_sec", fallback=7.0),
-        stale_iou_threshold=getfloat("stale_detection", "iou_threshold", fallback=0.50),
-        stale_center_threshold=getfloat("stale_detection", "center_threshold", fallback=0.10),
-        stale_expire_sec=getfloat("stale_detection", "expire_sec", fallback=3.0),
-        stale_area_ratio_min=getfloat("stale_detection", "area_ratio_min", fallback=0.50),
-        stale_area_ratio_max=getfloat("stale_detection", "area_ratio_max", fallback=2.00),
-        stale_log_interval_sec=getfloat("stale_detection", "log_interval_sec", fallback=5.0),
 
         ae_enable=getbool("exposure", "ae_enable", fallback=True),
         ae_exposure_mode=get("exposure", "ae_exposure_mode", fallback="short").strip().lower(),
@@ -284,7 +221,6 @@ def read_config(config_path: str) -> AppConfig:
         draw_detections=getbool("debug", "draw_detections", fallback=False),
         show_saved_overlay=getbool("debug", "show_saved_overlay", fallback=True),
         preview_backend=preview_backend,
-        fps_log_interval_sec=getfloat("debug", "fps_log_interval_sec", fallback=0.0),
 
         timelapse_enabled=getbool("timelapse", "enabled", fallback=False),
         timelapse_interval_sec=getfloat("timelapse", "interval_sec", fallback=60.0),
@@ -302,7 +238,6 @@ def format_exception_name_and_message(exc: BaseException) -> str:
 def cleanup_camera():
     global picam2, imx500, intrinsics, still_config, preview_config, capture_in_progress
     capture_in_progress = False
-    stop_async_save_worker(timeout=5.0)
     try:
         if picam2 is not None:
             picam2.stop()
@@ -567,15 +502,7 @@ class Detection:
     def __init__(self, coords, category, conf, metadata):
         self.category = int(category)
         self.conf = float(conf)
-        try:
-            self.box = imx500.convert_inference_coords(coords, metadata, picam2, stream=DETECTION_STREAM)
-        except TypeError as e:
-            if "stream" not in str(e):
-                raise
-            # Older Picamera2 releases only convert to the main stream. In the
-            # current pipeline, main is full-res, so convert back to
-            # preview/lores coordinates.
-            self.box = scale_box_still_to_preview(*imx500.convert_inference_coords(coords, metadata, picam2))
+        self.box = imx500.convert_inference_coords(coords, metadata, picam2)
 
 
 def parse_detections(metadata: dict):
@@ -606,264 +533,12 @@ def parse_detections(metadata: dict):
         if intrinsics.bbox_order == "xy":
             boxes = boxes[:, [1, 0, 3, 2]]
 
-        keep = class_aware_nms(boxes, scores, classes)
-        boxes = [boxes[i] for i in keep]
-        scores = [scores[i] for i in keep]
-        classes = [classes[i] for i in keep]
-
-    if intrinsics.postprocess == "nanodet":
-        detections_iter = [
-            (box, score, category)
-            for box, score, category in zip(boxes, scores, classes)
-            if score > cfg.threshold
-        ]
-    else:
-        detections_iter = zip(boxes, scores, classes)
-
     last_detections = [
         Detection(box, category, score, metadata)
-        for box, score, category in detections_iter
+        for box, score, category in zip(boxes, scores, classes)
+        if score > cfg.threshold
     ]
     return last_detections
-
-
-def metadata_has_current_inference(metadata: dict) -> bool:
-    output_tensor = metadata.get("CnnOutputTensor")
-    if output_tensor is None:
-        return False
-    try:
-        return len(output_tensor) > 0
-    except TypeError:
-        return True
-
-
-def inference_box_iou(a, b) -> float:
-    ay1, ax1, ay2, ax2 = [float(v) for v in a]
-    by1, bx1, by2, bx2 = [float(v) for v in b]
-    ix1 = max(ax1, bx1)
-    iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2)
-    iy2 = min(ay2, by2)
-    intersection = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-    union = area_a + area_b - intersection
-    if union <= 0:
-        return 0.0
-    return intersection / union
-
-
-def class_aware_nms(boxes, scores, classes):
-    candidates = [
-        i for i, score in enumerate(scores)
-        if float(score) > cfg.threshold
-    ]
-    candidates.sort(key=lambda i: float(scores[i]), reverse=True)
-
-    keep = []
-    while candidates and len(keep) < cfg.max_detections:
-        current = candidates.pop(0)
-        keep.append(current)
-
-        remaining = []
-        for candidate in candidates:
-            same_class = int(classes[candidate]) == int(classes[current])
-            overlaps = inference_box_iou(boxes[candidate], boxes[current]) > cfg.iou
-            if same_class and overlaps:
-                continue
-            remaining.append(candidate)
-        candidates = remaining
-
-    return keep
-
-
-def format_wall_time_with_ms() -> str:
-    now = datetime.now()
-    return f"{now.strftime('%Y-%m-%d %H:%M:%S')}.{now.microsecond // 1000:03d}"
-
-
-def sensor_age_ms(metadata: dict, now_monotonic_ns: int | None = None) -> float | None:
-    sensor_timestamp = metadata.get("SensorTimestamp")
-    if sensor_timestamp is None:
-        return None
-    try:
-        sensor_timestamp = int(sensor_timestamp)
-    except (TypeError, ValueError):
-        return None
-    if now_monotonic_ns is None:
-        now_monotonic_ns = time.monotonic_ns()
-    age_ms = (now_monotonic_ns - sensor_timestamp) / 1_000_000.0
-    if age_ms < 0:
-        return None
-    return age_ms
-
-
-def _box_tuple(box) -> tuple:
-    x, y, w, h = box
-    return float(x), float(y), float(w), float(h)
-
-
-def box_area(box) -> float:
-    _x, _y, w, h = _box_tuple(box)
-    return max(0.0, w) * max(0.0, h)
-
-
-def box_iou(a, b) -> float:
-    ax, ay, aw, ah = _box_tuple(a)
-    bx, by, bw, bh = _box_tuple(b)
-    ax2, ay2 = ax + aw, ay + ah
-    bx2, by2 = bx + bw, by + bh
-
-    ix1 = max(ax, bx)
-    iy1 = max(ay, by)
-    ix2 = min(ax2, bx2)
-    iy2 = min(ay2, by2)
-    iw = max(0.0, ix2 - ix1)
-    ih = max(0.0, iy2 - iy1)
-    intersection = iw * ih
-    union = box_area(a) + box_area(b) - intersection
-    if union <= 0:
-        return 0.0
-    return intersection / union
-
-
-def center_distance_norm(a, b) -> float:
-    ax, ay, aw, ah = _box_tuple(a)
-    bx, by, bw, bh = _box_tuple(b)
-    acx = ax + (aw / 2.0)
-    acy = ay + (ah / 2.0)
-    bcx = bx + (bw / 2.0)
-    bcy = by + (bh / 2.0)
-    dx = abs(acx - bcx) / max(1.0, float(cfg.preview_width))
-    dy = abs(acy - bcy) / max(1.0, float(cfg.preview_height))
-    return max(dx, dy)
-
-
-def area_ratio(current, tracked) -> float:
-    tracked_area = box_area(tracked)
-    if tracked_area <= 0:
-        return float("inf")
-    return box_area(current) / tracked_area
-
-
-def expire_stale_tracks(now_mono: float):
-    global stale_tracks
-    stale_tracks = [
-        track for track in stale_tracks
-        if now_mono - track.last_seen <= cfg.stale_expire_sec
-    ]
-
-
-def find_stale_track(detection, excluded_track_ids=None):
-    if excluded_track_ids is None:
-        excluded_track_ids = set()
-
-    best = None
-    best_metrics = None
-    best_score = None
-
-    for track in stale_tracks:
-        if track.id in excluded_track_ids:
-            continue
-        if track.category != detection.category:
-            continue
-
-        iou_value = box_iou(detection.box, track.box)
-        center_value = center_distance_norm(detection.box, track.box)
-        ratio_value = area_ratio(detection.box, track.box)
-        center_match = (
-            center_value <= cfg.stale_center_threshold
-            and cfg.stale_area_ratio_min <= ratio_value <= cfg.stale_area_ratio_max
-        )
-        if iou_value < cfg.stale_iou_threshold and not center_match:
-            continue
-
-        score = iou_value - center_value
-        if best_score is None or score > best_score:
-            best = track
-            best_metrics = (iou_value, center_value, ratio_value)
-            best_score = score
-
-    return best, best_metrics
-
-
-def update_track_from_detection(track: StaleTrack, detection, now_mono: float):
-    track.box = _box_tuple(detection.box)
-    track.conf = float(detection.conf)
-    track.last_seen = now_mono
-
-
-def create_stale_track(detection, now_mono: float) -> StaleTrack:
-    global stale_next_track_id
-    track = StaleTrack(
-        id=stale_next_track_id,
-        category=int(detection.category),
-        box=_box_tuple(detection.box),
-        conf=float(detection.conf),
-        first_seen=now_mono,
-        last_seen=now_mono,
-        last_capture=now_mono,
-    )
-    stale_next_track_id += 1
-    stale_tracks.append(track)
-    return track
-
-
-def filter_stale_detections(detections):
-    global stale_suppressed_total, last_stale_suppression_log
-
-    if not cfg.stale_detection_enabled:
-        return detections, []
-
-    now_mono = time.monotonic()
-    expire_stale_tracks(now_mono)
-
-    fresh = []
-    suppressed = []
-    stale_count_before = len(stale_tracks)
-    matched_track_ids = set()
-
-    for detection in detections:
-        track, metrics = find_stale_track(detection, matched_track_ids)
-        if track is None:
-            track = create_stale_track(detection, now_mono)
-            matched_track_ids.add(track.id)
-            fresh.append(detection)
-            continue
-
-        matched_track_ids.add(track.id)
-        _iou_value, _center_value, ratio_value = metrics
-        stale_age = now_mono - track.first_seen
-        size_change = (
-            ratio_value < cfg.stale_area_ratio_min
-            or ratio_value > cfg.stale_area_ratio_max
-        )
-
-        if size_change:
-            track.first_seen = now_mono
-            track.last_capture = now_mono
-            fresh.append(detection)
-        elif stale_age >= cfg.stale_detection_sec:
-            suppressed.append(detection)
-            track.suppressed_count += 1
-            stale_suppressed_total += 1
-        else:
-            track.last_capture = now_mono
-            fresh.append(detection)
-
-        update_track_from_detection(track, detection, now_mono)
-
-    if suppressed and now_mono - last_stale_suppression_log >= cfg.stale_log_interval_sec:
-        print(
-            f"Stale detections suppressed: fresh={len(fresh)} suppressed={len(suppressed)} "
-            f"tracks={len(stale_tracks)} total_suppressed={stale_suppressed_total}",
-            flush=True,
-        )
-        last_stale_suppression_log = now_mono
-    elif stale_count_before and not detections:
-        expire_stale_tracks(now_mono)
-
-    return fresh, suppressed
 
 
 @lru_cache
@@ -890,26 +565,9 @@ def scale_box_preview_to_still(x, y, w, h):
     return x2, y2, w2, h2
 
 
-def scale_box_still_to_preview(x, y, w, h):
-    sx = cfg.preview_width / cfg.still_width
-    sy = cfg.preview_height / cfg.still_height
-
-    x2 = float(x * sx)
-    y2 = float(y * sy)
-    w2 = float(w * sx)
-    h2 = float(h * sy)
-
-    x2 = max(0.0, min(float(cfg.preview_width), x2))
-    y2 = max(0.0, min(float(cfg.preview_height), y2))
-    w2 = max(1.0, min(float(cfg.preview_width) - x2, w2))
-    h2 = max(1.0, min(float(cfg.preview_height) - y2, h2))
-    return x2, y2, w2, h2
-
-
 def write_label_txt(label_path: str, detections):
     # YOLO format: class_id x_center y_center width height confidence
-    # Detection boxes are in preview/lores coordinates; labels are normalized
-    # to the saved main-stream resolution with confidence in [0, 1].
+    # xywh normalized to still capture resolution; confidence in [0, 1]
     with open(label_path, "w", encoding="utf-8") as f:
         for d in detections:
             x, y, w, h = d.box
@@ -927,125 +585,7 @@ def write_label_txt(label_path: str, detections):
             f.write(f"{d.category} {xc:.6f} {yc:.6f} {wn:.6f} {hn:.6f} {d.conf:.6f}\n")
 
 
-def _record_async_save(success: bool):
-    global async_saves_completed, async_saves_failed
-    with save_stats_lock:
-        if success:
-            async_saves_completed += 1
-        else:
-            async_saves_failed += 1
-
-
-def _record_async_save_dropped():
-    global async_saves_dropped
-    with save_stats_lock:
-        async_saves_dropped += 1
-
-
-def get_async_saves_completed() -> int:
-    with save_stats_lock:
-        return async_saves_completed
-
-
-def get_async_saves_dropped() -> int:
-    with save_stats_lock:
-        return async_saves_dropped
-
-
-class AsyncSaveWorker(threading.Thread):
-    def __init__(self, jobs: queue.Queue, stop_event: threading.Event):
-        super().__init__(daemon=True)
-        self.jobs = jobs
-        self.stop_event = stop_event
-        self._error = None
-        self._error_lock = threading.Lock()
-
-    def get_error(self):
-        with self._error_lock:
-            return self._error
-
-    def _set_error(self, exc: BaseException):
-        with self._error_lock:
-            if self._error is None:
-                self._error = exc
-
-    def run(self):
-        while not self.stop_event.is_set() or not self.jobs.empty():
-            try:
-                job = self.jobs.get(timeout=0.1)
-            except queue.Empty:
-                continue
-
-            success = False
-            try:
-                job.request.save(CAPTURE_STREAM, job.image_path)
-                if job.detections is not None:
-                    write_label_txt(job.label_path, job.detections)
-                    print(f"Saved: {job.label_path}", flush=True)
-
-                detection_count = len(job.detections) if job.detections is not None else 0
-                save_delay_ms = (time.monotonic() - job.queued_monotonic) * 1000.0
-                print(
-                    f"Capture saved: {job.image_path} detections={detection_count} "
-                    f"queued_at={job.queued_wall} saved_at={format_wall_time_with_ms()} "
-                    f"save_delay_ms={save_delay_ms:.1f}",
-                    flush=True,
-                )
-                update_saved_status(job.stem)
-                success = True
-            except Exception as e:
-                log_exception_event("async_save_error", f"Async save failed for {job.image_path}", e)
-                print(f"Async save failed: {job.image_path}: {e}", file=sys.stderr, flush=True)
-                self._set_error(e)
-            finally:
-                try:
-                    job.request.release()
-                except Exception as e:
-                    log_exception_event("async_save_release_error", "Failed to release async save request", e)
-                    print(f"Async save request release failed: {e}", file=sys.stderr, flush=True)
-                    self._set_error(e)
-                _record_async_save(success)
-                self.jobs.task_done()
-
-
-def start_async_save_worker():
-    global save_queue, save_worker, save_stop_event
-    if save_worker is not None:
-        return
-    maxsize = max(1, cfg.async_save_queue_size)
-    save_queue = queue.Queue(maxsize=maxsize)
-    save_stop_event = threading.Event()
-    save_worker = AsyncSaveWorker(save_queue, save_stop_event)
-    save_worker.start()
-    print(f"Async saver started queue_size={maxsize}", flush=True)
-
-
-def stop_async_save_worker(timeout: float = 10.0):
-    global save_queue, save_worker, save_stop_event
-    worker = save_worker
-    if worker is None:
-        return
-    if save_stop_event is not None:
-        save_stop_event.set()
-    worker.join(timeout=timeout)
-    if worker.is_alive():
-        pending = save_queue.qsize() if save_queue is not None else 0
-        print(f"Async saver still busy; pending_saves={pending}", file=sys.stderr, flush=True)
-    else:
-        save_worker = None
-        save_queue = None
-        save_stop_event = None
-
-
-def raise_async_save_error_if_any():
-    if save_worker is None:
-        return
-    error = save_worker.get_error()
-    if error is not None:
-        raise RuntimeError(f"Async save worker failed: {error}") from error
-
-
-def draw_debug_detections(request, stream=DETECTION_STREAM):
+def draw_debug_detections(request, stream="main"):
     if not cfg.draw_detections:
         return
 
@@ -1060,7 +600,7 @@ def draw_debug_detections(request, stream=DETECTION_STREAM):
 
     with MappedArray(request, stream) as m:
         for d in detections:
-            x, y, w, h = [int(round(v)) for v in d.box]
+            x, y, w, h = d.box
             label = labels[d.category] if 0 <= d.category < len(labels) else str(d.category)
             text = f"{label} {d.conf:.2f}"
             cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -1083,7 +623,7 @@ def update_saved_status(stem: str):
             status.state = "SCANNING"
 
 
-def capture_still(stem: str, detections=None, request=None):
+def capture_still(stem: str, detections=None):
     global capture_in_progress, last_capture_time
 
     if capture_in_progress:
@@ -1107,15 +647,13 @@ def capture_still(stem: str, detections=None, request=None):
         with status_lock:
             status.state = "TIMELAPSE" if (cfg.timelapse_enabled and detections is None) else "DETECTION"
 
-        if request is not None:
-            # Save the full-res main buffer from the same completed request
-            # whose metadata produced the detection boxes.
-            request.save(CAPTURE_STREAM, image_path)
-        elif cfg.timelapse_enabled and detections is None:
-            # Timelapse uses a still-only pipeline so no mode switch is needed.
+        # Timelapse uses a still-only pipeline so no mode switch is needed.
+        if cfg.timelapse_enabled and detections is None:
             picam2.capture_file(image_path)
         else:
-            raise RuntimeError("Model captures require a completed request")
+            # Blocks until the full-res JPEG is written to disk before returning,
+            # preventing re-entry into the inference loop mid-save.
+            picam2.switch_mode_and_capture_file(still_config, image_path)
 
         if detections is not None:
             write_label_txt(label_path, detections)
@@ -1129,80 +667,8 @@ def capture_still(stem: str, detections=None, request=None):
         capture_in_progress = False
 
 
-def queue_capture_still(stem: str, detections, request, metadata):
-    global last_capture_time, last_save_queue_full_log
-
-    if time.monotonic() - last_capture_time < cfg.capture_cooldown_sec:
-        return False
-
-    with status_lock:
-        if status.storage_locked or status.disk_used_percent >= cfg.storage_stop_percent:
-            status.stop_due_to_storage = True
-            status.storage_locked = True
-            status.state = "FULL"
-            return False
-
-    if save_queue is None:
-        raise RuntimeError("Async save worker is not running")
-
-    images_dir, labels_dir = dated_dirs(cfg.save_root)
-    image_path = os.path.join(images_dir, f"{stem}.jpg")
-    label_path = os.path.join(labels_dir, f"{stem}.txt")
-    queued_monotonic = time.monotonic()
-    queued_wall = format_wall_time_with_ms()
-    queued_monotonic_ns = time.monotonic_ns()
-    frame_age_ms = sensor_age_ms(metadata, queued_monotonic_ns)
-    sensor_timestamp = metadata.get("SensorTimestamp")
-    try:
-        sensor_timestamp_ns = int(sensor_timestamp) if sensor_timestamp is not None else None
-    except (TypeError, ValueError):
-        sensor_timestamp_ns = None
-    job = SaveJob(
-        stem=stem,
-        image_path=image_path,
-        label_path=label_path,
-        detections=list(detections) if detections is not None else None,
-        request=request,
-        queued_monotonic=queued_monotonic,
-        queued_wall=queued_wall,
-        sensor_timestamp_ns=sensor_timestamp_ns,
-    )
-
-    request.acquire()
-    try:
-        save_queue.put_nowait(job)
-    except queue.Full:
-        request.release()
-        _record_async_save_dropped()
-        now_mono = time.monotonic()
-        if now_mono - last_save_queue_full_log >= 5.0:
-            print(
-                f"Async save queue full; dropping capture request pending_saves={save_queue.qsize()} "
-                f"total_dropped={get_async_saves_dropped()}",
-                file=sys.stderr,
-                flush=True,
-            )
-            last_save_queue_full_log = now_mono
-        return False
-    except Exception:
-        request.release()
-        raise
-
-    last_capture_time = time.monotonic()
-    with status_lock:
-        status.state = "DETECTION"
-    detection_count = len(detections) if detections is not None else 0
-    frame_age_text = f" frame_age_ms={frame_age_ms:.1f}" if frame_age_ms is not None else ""
-    print(
-        f"Capture grabbed: {image_path} detections={detection_count} "
-        f"queued_at={queued_wall}{frame_age_text} pending_saves={save_queue.qsize()}",
-        flush=True,
-    )
-    return True
-
-
-def capture_full_res_image(detections, request, metadata):
-    return queue_capture_still(make_stem(), detections=detections, request=request, metadata=metadata)
+def capture_full_res_image(detections):
+    return capture_still(make_stem(), detections=detections)
 
 
 def capture_timelapse_image_if_due():
@@ -1258,11 +724,6 @@ def build_camera_objects():
                 intrinsics.labels = f.read().splitlines()
 
         intrinsics.update_with_defaults()
-        print(
-            f"Detection config: postprocess={intrinsics.postprocess} "
-            f"threshold={cfg.threshold} iou={cfg.iou}",
-            flush=True,
-        )
         picam2 = Picamera2(imx500.camera_num)
     else:
         # Timelapse mode uses a still-only camera pipeline and skips model inference.
@@ -1293,45 +754,19 @@ def build_camera_objects():
     preview_config = None
     if not cfg.timelapse_enabled:
         preview_config = picam2.create_preview_configuration(
-            main={"size": (cfg.still_width, cfg.still_height), "format": "YUV420"},
-            lores={"size": (cfg.preview_width, cfg.preview_height), "format": "YUV420"},
+            main={"size": (cfg.preview_width, cfg.preview_height), "format": "YUV420"},
             controls=preview_controls,
             buffer_count=cfg.buffer_count_preview,
-            display=DETECTION_STREAM,
-            encode=CAPTURE_STREAM,
-            queue=False,
         )
 
-    still_config = None
-    if cfg.timelapse_enabled:
-        still_config = picam2.create_still_configuration(
-            main={"size": (cfg.still_width, cfg.still_height), "format": "YUV420"},
-            controls=still_controls,
-            buffer_count=cfg.buffer_count_still,
-        )
+    still_config = picam2.create_still_configuration(
+        main={"size": (cfg.still_width, cfg.still_height), "format": "YUV420"},
+        controls=still_controls,
+        buffer_count=cfg.buffer_count_still,
+    )
 
     if (cfg.draw_detections or cfg.show_saved_overlay) and not cfg.timelapse_enabled:
         picam2.pre_callback = draw_debug_detections
-
-
-def configure_inference_roi():
-    if imx500 is None or intrinsics is None:
-        return
-
-    if intrinsics.preserve_aspect_ratio:
-        imx500.set_auto_aspect_ratio()
-        print(f"IMX500 inference ROI: auto aspect ratio input_size={imx500.get_input_size()}", flush=True)
-        return
-
-    full_roi = (0, 0, cfg.still_width, cfg.still_height)
-    try:
-        full_sensor = imx500.get_full_sensor_resolution()
-        full_roi = full_sensor.to_tuple() if hasattr(full_sensor, "to_tuple") else tuple(full_sensor)
-    except AttributeError:
-        pass
-
-    imx500.set_inference_roi_abs(full_roi)
-    print(f"IMX500 inference ROI: full sensor {full_roi}", flush=True)
 
 
 def stay_alive_storage_locked(stop_event: threading.Event):
@@ -1414,30 +849,20 @@ def main():
             picam2.start(still_config, show_preview=maybe_get_preview_arg())
         else:
             picam2.start(preview_config, show_preview=maybe_get_preview_arg())
-            start_async_save_worker()
 
-        configure_inference_roi()
+        if intrinsics is not None and intrinsics.preserve_aspect_ratio:
+            imx500.set_auto_aspect_ratio()
 
         with status_lock:
             status.state = "TIMELAPSE" if cfg.timelapse_enabled else "SCANNING"
 
-        print("beecam_capture_final started")
-        fps_window_start = time.monotonic()
-        fps_request_count = 0
-        fps_inference_count = 0
-        fps_queued_count = 0
-        fps_stale_suppressed_count = 0
-        fps_saved_start = get_async_saves_completed()
-        fps_dropped_start = get_async_saves_dropped()
+        print("beecam_capture started")
 
         while True:
-            raise_async_save_error_if_any()
-
             with status_lock:
                 should_lock = status.storage_locked
 
             if should_lock:
-                stop_async_save_worker(timeout=10.0)
                 try:
                     picam2.stop()
                 except Exception:
@@ -1450,57 +875,11 @@ def main():
                 time.sleep(0.05)
                 continue
 
-            request = picam2.capture_request()
-            try:
-                metadata = request.get_metadata()
-                has_current_inference = metadata_has_current_inference(metadata)
-                detections = parse_detections(metadata)
-                fresh_detections = detections
-                stale_detections = []
-
-                fps_request_count += 1
-                if has_current_inference:
-                    fps_inference_count += 1
-                    fresh_detections, stale_detections = filter_stale_detections(detections)
-                    fps_stale_suppressed_count += len(stale_detections)
-
-                if fresh_detections and has_current_inference:
-                    if capture_full_res_image(fresh_detections, request, metadata):
-                        fps_queued_count += 1
-
-                if cfg.fps_log_interval_sec > 0:
-                    now_mono = time.monotonic()
-                    elapsed = now_mono - fps_window_start
-                    if elapsed >= cfg.fps_log_interval_sec:
-                        request_fps = fps_request_count / elapsed
-                        inference_fps = fps_inference_count / elapsed
-                        queued_fps = fps_queued_count / elapsed
-                        saves_completed = get_async_saves_completed()
-                        saved_fps = (saves_completed - fps_saved_start) / elapsed
-                        saves_dropped = get_async_saves_dropped()
-                        dropped_count = saves_dropped - fps_dropped_start
-                        pending_saves = save_queue.qsize() if save_queue is not None else 0
-                        frame_duration = metadata.get("FrameDuration")
-                        sensor_fps = (1000000.0 / frame_duration) if frame_duration else None
-                        sensor_text = f" sensor_fps={sensor_fps:.2f}" if sensor_fps else ""
-                        print(
-                            f"FPS: requests={request_fps:.2f} inference={inference_fps:.2f} "
-                            f"queued={queued_fps:.2f} saved={saved_fps:.2f} "
-                            f"stale_suppressed={fps_stale_suppressed_count} "
-                            f"dropped={dropped_count} total_dropped={saves_dropped} "
-                            f"pending_saves={pending_saves}{sensor_text}",
-                            flush=True,
-                        )
-                        fps_window_start = now_mono
-                        fps_request_count = 0
-                        fps_inference_count = 0
-                        fps_queued_count = 0
-                        fps_stale_suppressed_count = 0
-                        fps_saved_start = saves_completed
-                        fps_dropped_start = saves_dropped
-                time.sleep(0.001)
-            finally:
-                request.release()
+            metadata = picam2.capture_metadata()
+            detections = parse_detections(metadata)
+            if detections:
+                capture_full_res_image(detections)
+            time.sleep(0.001)
 
     except KeyboardInterrupt:
         with status_lock:
@@ -1516,8 +895,6 @@ def main():
             oled_worker.join(timeout=2)
         except Exception:
             pass
-
-        stop_async_save_worker(timeout=10.0)
 
         try:
             if picam2 is not None:

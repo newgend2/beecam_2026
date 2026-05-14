@@ -95,6 +95,11 @@ install_beecam_files() {
     require_file "${SCRIPT_DIR}/beecam"
     sudo rm -rf "${PI_HOME}/beecam"
     sudo cp -a "${SCRIPT_DIR}/beecam" "${PI_HOME}/beecam"
+    sudo rm -rf "${PI_HOME}/beecam/camera/relegated" "${PI_HOME}/beecam/camera/__pycache__"
+    sudo find "${PI_HOME}/beecam/camera" -maxdepth 1 -type f -name '*.py' \
+        ! -name 'beecam_capture_final.py' \
+        ! -name 'beecam_preview.py' \
+        -delete
     sudo chown -R pi:pi "${PI_HOME}/beecam"
 
     if mountpoint -q /data; then

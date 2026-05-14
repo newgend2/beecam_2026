@@ -70,6 +70,20 @@ from `wittypi/afterStartup.sh` and stops it from `wittypi/beforeShutdown.sh`.
 
 All other service files in `systemd_services/` are enabled by the installer.
 
+## Field Runtime Updates
+
+For cameras that already have this repo at `/home/pi/setup`, update the runtime
+capture script, preview script, service file, and camera config with:
+
+```bash
+ssh pi@cam7 'cd ~/setup && git pull --ff-only && chmod +x scripts/beecam-update-runtime.sh && scripts/beecam-update-runtime.sh --restart'
+```
+
+The updater backs up the current runtime files under `/data/update_backups/`
+before replacing them. It deploys only the production camera Python scripts
+(`beecam_capture_final.py` and `beecam_preview.py`) to `/home/pi/beecam/camera`,
+and overwrites `/data/configs/camera_config_final.ini`.
+
 ## Troubleshooting
 
 Systemd service files are installed to:
