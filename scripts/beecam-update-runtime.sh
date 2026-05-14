@@ -121,14 +121,14 @@ BACKUP_ROOT="/data/update_backups/$(date +%Y%m%d_%H%M%S)"
 log "Backing up current runtime files to ${BACKUP_ROOT}"
 sudo mkdir -p "$BACKUP_ROOT"
 if [[ -d "$APP_DIR" ]]; then
-    sudo cp -a "$APP_DIR" "${BACKUP_ROOT}/beecam"
+    sudo cp -r "$APP_DIR" "${BACKUP_ROOT}/beecam"
 fi
 if [[ -d "$DATA_CONFIG_DIR" ]]; then
     sudo mkdir -p "${BACKUP_ROOT}/configs"
-    sudo cp -a "${DATA_CONFIG_DIR}/." "${BACKUP_ROOT}/configs/"
+    sudo cp -r "${DATA_CONFIG_DIR}/." "${BACKUP_ROOT}/configs/"
 fi
 if [[ -f "$SERVICE_FILE" ]]; then
-    sudo cp -a "$SERVICE_FILE" "${BACKUP_ROOT}/beecam.service"
+    sudo cp "$SERVICE_FILE" "${BACKUP_ROOT}/beecam.service"
 fi
 
 log "Updating /home/pi/beecam"
