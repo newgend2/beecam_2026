@@ -274,7 +274,7 @@ echo ""
 echo "Plan:"
 echo "  1. Zip ${INCLUDE[*]} → $DEST_ZIP"
 echo "  2. Verify zip integrity"
-echo "  3. Delete from SD:   images_and_labels/  logs/  update_backups/"
+echo "  3. Delete from SD:   images_and_labels/  logs/  update_backups/  .Trash-*/"
 echo "  4. Keep on SD:       configs/  hostname"
 echo "  5. Unmount SD card DATA partition"
 echo ""
@@ -346,6 +346,11 @@ if [[ -d "$SRC/update_backups" ]]; then
     echo "  Deleted: update_backups/"
 fi
 
+while IFS= read -r trash_dir; do
+    rm -rf "$trash_dir"
+    echo "  Deleted: $(basename "$trash_dir")/"
+done < <(find "$SRC" -mindepth 1 -maxdepth 1 -type d -name '.Trash-*' -print 2>/dev/null)
+
 for d in images_and_labels logs; do
     if [[ -d "$SRC/$d" ]]; then
         if ! remaining=$(find "$SRC/$d" -mindepth 1 -print -quit 2>/dev/null); then
@@ -355,6 +360,11 @@ for d in images_and_labels logs; do
     fi
 done
 [[ ! -e "$SRC/update_backups" ]] || die "Cleanup verification failed; $SRC/update_backups still exists"
+if remaining_trash=$(find "$SRC" -mindepth 1 -maxdepth 1 -type d -name '.Trash-*' -print -quit 2>/dev/null); then
+    [[ -z "$remaining_trash" ]] || die "Cleanup verification failed; still found $remaining_trash"
+else
+    die "Cleanup verification failed; could not scan for SD card trash directories"
+fi
 
 flush_filesystem "$SRC"
 print_disk_usage "After cleanup" "$SRC"

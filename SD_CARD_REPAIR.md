@@ -6,6 +6,10 @@ Use this when `transfer_beecam.sh` reports a cleanup error like:
 rm: cannot remove '/media/wlab/DATA/...': Directory not empty
 ```
 
+Also use it when `df -h` still shows the DATA partition as partly full after
+transfer, but normal `ls` does not show image data. Check `ls -a`; old deleted
+files may be in `.Trash-1000`.
+
 These commands repair the SD card's `DATA` partition. Do not repair the whole
 SD device.
 
@@ -83,6 +87,7 @@ Unplug and reinsert the SD card, then remove any leftover transferred data:
 rm -rf /media/wlab/DATA/images_and_labels
 rm -rf /media/wlab/DATA/logs
 rm -rf /media/wlab/DATA/update_backups
+rm -rf /media/wlab/DATA/.Trash-*
 mkdir -p /media/wlab/DATA/images_and_labels /media/wlab/DATA/logs
 sync
 ```

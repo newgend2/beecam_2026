@@ -52,6 +52,12 @@ case "$confirm" in
 esac
 
 echo
+echo "==> Checking camera DATA mount"
+if ! ssh "$REMOTE" 'mountpoint -q /data && test -d /data/configs'; then
+    die "Remote /data is not mounted or /data/configs is missing on ${REMOTE}."
+fi
+
+echo
 echo "==> Syncing repo to camera"
 rsync -az --delete \
     --exclude='.git/' \
