@@ -22,6 +22,95 @@ set -euo pipefail
 
 die() { echo "Error: $*" >&2; exit 1; }
 
+path_is_mountpoint() {
+    local path="$1"
+    if command -v mountpoint &>/dev/null; then
+        mountpoint -q "$path"
+        return
+    fi
+
+    # Best-effort fallback for systems without mountpoint(1), such as macOS.
+    local parent
+    parent=$(dirname "$path")
+    [[ "$(df -P "$path" 2>/dev/null | awk 'NR==2 {print $1}')" != "$(df -P "$parent" 2>/dev/null | awk 'NR==2 {print $1}')" ]]
+}
+
+flush_filesystem() {
+    local path="$1"
+    echo "Flushing SD card writes..."
+    if sync -f "$path" &>/dev/null; then
+        return
+    fi
+    sync
+}
+
+print_disk_usage() {
+    local label="$1"
+    local path="$2"
+    local used size pct
+    if ! read -r size used pct < <(df -h "$path" | awk 'NR==2 {print $2, $3, $5}'); then
+        return
+    fi
+    [[ -n "${size:-}" ]] || return
+    printf "  %s: %s used of %s (%s)\n" "$label" "$used" "$size" "$pct"
+}
+
+get_mount_source() {
+    local path="$1"
+    if command -v findmnt &>/dev/null; then
+        findmnt -n -o SOURCE --target "$path" 2>/dev/null | sed -n '1p'
+        return
+    fi
+    df -P "$path" 2>/dev/null | awk 'NR==2 {print $1}'
+}
+
+unmount_source() {
+    local path="$1"
+    local device="$2"
+
+    echo ""
+    echo "Unmounting SD card DATA partition..."
+
+    # The script zipped from inside $SRC, so leave the mount before unmounting it.
+    cd /
+
+    if [[ "$OSTYPE" == darwin* ]]; then
+        if diskutil unmount "$path" >/dev/null; then
+            echo "  Unmounted: $path"
+            return
+        fi
+        if [[ -n "$device" ]] && diskutil unmount "$device" >/dev/null; then
+            echo "  Unmounted: $device"
+            return
+        fi
+        die "Could not unmount $path. Close any windows or terminals using the SD card, then eject it manually."
+    fi
+
+    if [[ -n "$device" && "$device" == /dev/* ]] && command -v udisksctl &>/dev/null; then
+        if udisksctl unmount -b "$device" >/dev/null 2>&1; then
+            echo "  Unmounted: $device"
+            return
+        fi
+    fi
+
+    if umount "$path" 2>/dev/null; then
+        echo "  Unmounted: $path"
+        return
+    fi
+
+    if [[ -n "$device" && "$device" == /dev/* ]] && umount "$device" 2>/dev/null; then
+        echo "  Unmounted: $device"
+        return
+    fi
+
+    if command -v sudo &>/dev/null && sudo -n umount "$path" 2>/dev/null; then
+        echo "  Unmounted: $path"
+        return
+    fi
+
+    die "Could not unmount $path without prompting. Close any windows or terminals using the SD card, then unmount it manually."
+}
+
 get_current_hostname() {
     local h
     h=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'unknown')
@@ -68,6 +157,12 @@ DEST="${DEST%/}"
 
 [[ -d "$SRC" ]]  || die "Source path does not exist: $SRC"
 [[ -d "$DEST" ]] || die "Destination path does not exist: $DEST"
+
+if [[ "$OSTYPE" != darwin* ]] && ! path_is_mountpoint "$SRC"; then
+    die "Source path exists but is not a mounted filesystem: $SRC. Reinsert/eject the SD card and make sure the DATA partition is mounted."
+fi
+
+SRC_DEVICE=$(get_mount_source "$SRC" 2>/dev/null || true)
 
 # ── dependency checks ─────────────────────────────────────────────────────────
 
@@ -181,6 +276,7 @@ echo "  1. Zip ${INCLUDE[*]} → $DEST_ZIP"
 echo "  2. Verify zip integrity"
 echo "  3. Delete from SD:   images_and_labels/  logs/  update_backups/"
 echo "  4. Keep on SD:       configs/  hostname"
+echo "  5. Unmount SD card DATA partition"
 echo ""
 read -r -p "Proceed? [y/N] " confirm
 case "$confirm" in
@@ -235,19 +331,44 @@ echo ""
 # ── delete transferred data from SD ──────────────────────────────────────────
 
 echo "Cleaning up SD card..."
-for d in images_and_labels logs update_backups; do
+print_disk_usage "Before cleanup" "$SRC"
+
+for d in images_and_labels logs; do
     if [[ -d "$SRC/$d" ]]; then
         rm -rf "${SRC:?}/$d"
-        echo "  Deleted: $d/"
+        mkdir -p "$SRC/$d"
+        echo "  Cleared: $d/"
     fi
 done
+
+if [[ -d "$SRC/update_backups" ]]; then
+    rm -rf "${SRC:?}/update_backups"
+    echo "  Deleted: update_backups/"
+fi
+
+for d in images_and_labels logs; do
+    if [[ -d "$SRC/$d" ]]; then
+        if ! remaining=$(find "$SRC/$d" -mindepth 1 -print -quit 2>/dev/null); then
+            die "Cleanup verification failed; could not scan $SRC/$d"
+        fi
+        [[ -z "$remaining" ]] || die "Cleanup verification failed; still found data under $SRC/$d"
+    fi
+done
+[[ ! -e "$SRC/update_backups" ]] || die "Cleanup verification failed; $SRC/update_backups still exists"
+
+flush_filesystem "$SRC"
+print_disk_usage "After cleanup" "$SRC"
 
 # ── summary ───────────────────────────────────────────────────────────────────
 
 ZIP_MB=$(du -k "$DEST_ZIP" 2>/dev/null | awk '{printf "%.1f", $1/1024}')
 
+unmount_source "$SRC" "$SRC_DEVICE"
+
 echo ""
 echo "Done."
 echo "  Archive:    $DEST_ZIP  (${ZIP_MB} MB)"
 echo "  Date range: $DATE_SUFFIX"
-echo "  Kept on SD: configs/  hostname"
+echo "  Kept on SD: configs/  hostname  empty images_and_labels/  empty logs/"
+echo "  SD card:    DATA partition unmounted"
+echo "  Safe next step: remove the SD card, unless another SD-card partition is still mounted."
