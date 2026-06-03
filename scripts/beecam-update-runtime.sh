@@ -49,6 +49,10 @@ die() {
     exit 1
 }
 
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || die "'$1' is required but was not found."
+}
+
 require_file() {
     [[ -e "$1" ]] || die "Missing required file: $1"
 }
@@ -93,6 +97,7 @@ fi
 require_file "${REPO_DIR}/beecam"
 require_file "${REPO_DIR}/configs/camera_config_final.ini"
 require_file "${REPO_DIR}/systemd_services/beecam.service"
+require_cmd mountpoint
 
 if $DO_GIT_PULL; then
     log "Pulling latest repo changes"
@@ -103,8 +108,12 @@ fi
 require_file "${REPO_DIR}/beecam/camera/${CAPTURE_SCRIPT}"
 require_file "${REPO_DIR}/beecam/camera/beecam_preview.py"
 
+if ! mountpoint -q /data; then
+    die "/data is not mounted. Refusing to update runtime files against the root filesystem."
+fi
+
 if [[ ! -d "$DATA_CONFIG_DIR" ]]; then
-    die "${DATA_CONFIG_DIR} does not exist. Is /data mounted?"
+    die "${DATA_CONFIG_DIR} does not exist on the mounted DATA partition."
 fi
 
 SERVICE_WAS_ACTIVE=false

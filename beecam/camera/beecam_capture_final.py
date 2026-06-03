@@ -397,6 +397,32 @@ def get_disk_used_percent(path: str) -> float:
     return (used / total) * 100.0
 
 
+def path_uses_data_mount(path: str) -> bool:
+    abs_path = os.path.abspath(path)
+    return abs_path == "/data" or abs_path.startswith("/data/")
+
+
+def require_data_mount(oled: object | None):
+    if cfg is None:
+        return
+    paths = [cfg.storage_check_path, cfg.save_root, cfg.exception_log_path]
+    if not any(path_uses_data_mount(path) for path in paths if path):
+        return
+    if os.path.ismount("/data"):
+        return
+
+    message = "/data is not mounted; refusing to write camera data to the root filesystem"
+    print(message, file=sys.stderr)
+    _oled_show_safe(oled, [
+        f"{hostname} {datetime.now().strftime('%m-%d %H:%M')}",
+        "Err: DATA mount",
+        "DATA not mounted",
+        "",
+        "Check SD card",
+    ], timeout=5.0)
+    raise RuntimeError(message)
+
+
 def shorten_schedule_time(dt_str: str) -> str:
     try:
         return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").strftime("%H:%M")
@@ -1362,6 +1388,8 @@ def main():
 
     if not cfg.oled_enabled:
         oled.enabled = False
+
+    require_data_mount(oled)
 
     try:
         with open("/data/hostname", "w", encoding="utf-8") as f:

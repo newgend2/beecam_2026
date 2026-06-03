@@ -101,6 +101,11 @@ if ! mountpoint -q "$MOUNTPOINT"; then
     mount "$MOUNTPOINT" || mount "$DATA_PART" "$MOUNTPOINT"
 fi
 
+if ! mountpoint -q "$MOUNTPOINT"; then
+    log "$MOUNTPOINT is not mounted after mount attempt"
+    exit 1
+fi
+
 mkdir -p "${MOUNTPOINT}/logs" "${MOUNTPOINT}/images_and_labels"
 
 if [[ -d "$SEED_CONFIG_DIR" && ! -e "${MOUNTPOINT}/configs" ]]; then
