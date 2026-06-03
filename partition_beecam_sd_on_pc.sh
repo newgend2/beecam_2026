@@ -112,7 +112,7 @@ if [[ "$DATA_MODE" == "create" ]]; then
     ROOT_END_MIB=$((ROOT_START_MIB + ROOT_SIZE_MIB))
 
     log "Checking root filesystem"
-    sudo e2fsck -f "$ROOT"
+    sudo e2fsck -fy "$ROOT"
 
     log "Shrinking ext4 filesystem below final 10GiB partition size"
     sudo resize2fs "$ROOT" "$ROOT_STAGING_FS_SIZE"
@@ -123,7 +123,7 @@ if [[ "$DATA_MODE" == "create" ]]; then
     sudo udevadm settle
 
     log "Growing ext4 filesystem to fill resized root partition"
-    sudo e2fsck -f "$ROOT"
+    sudo e2fsck -fy "$ROOT"
     sudo resize2fs "$ROOT"
 
     log "Creating exFAT DATA partition"

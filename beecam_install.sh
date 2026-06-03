@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_HOME="/home/pi"
 DATA_INIT="/usr/local/sbin/beecam-init-data.sh"
 VIDEO_ARG="video=HDMI-A-1:800x480@60D"
+RUN_APT_UPDATE="${BEECAM_APT_UPDATE:-1}"
+RUN_FULL_UPGRADE="${BEECAM_FULL_UPGRADE:-0}"
 
 log() {
     echo
@@ -24,6 +26,53 @@ require_file() {
     fi
 }
 
+usage() {
+    cat <<'USAGE'
+Usage:
+  ./beecam_install.sh [options]
+
+Options:
+  --full-upgrade       Run apt-get full-upgrade before installing packages.
+  --skip-apt-update    Skip apt-get update. Use only after running sudo apt update.
+  -h, --help           Show this help.
+
+Environment:
+  BEECAM_FULL_UPGRADE=1   Same as --full-upgrade.
+  BEECAM_APT_UPDATE=0     Same as --skip-apt-update.
+USAGE
+}
+
+is_enabled() {
+    case "${1,,}" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --full-upgrade)
+                RUN_FULL_UPGRADE=1
+                shift
+                ;;
+            --skip-apt-update)
+                RUN_APT_UPDATE=0
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                echo "Unknown argument: $1" >&2
+                usage >&2
+                exit 1
+                ;;
+        esac
+    done
+}
+
 install_data_initializer() {
     log "Installing DATA partition initializer"
     require_file "${SCRIPT_DIR}/scripts/beecam-init-data.sh"
@@ -37,8 +86,19 @@ install_data_initializer() {
 
 install_apt_packages() {
     log "Installing BeeCam apt packages"
-    sudo apt-get update
-    sudo DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y
+    if is_enabled "$RUN_APT_UPDATE"; then
+        sudo apt-get update
+    else
+        log "Skipping apt-get update because --skip-apt-update was requested"
+    fi
+
+    if is_enabled "$RUN_FULL_UPGRADE"; then
+        log "Running apt-get full-upgrade"
+        sudo DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y
+    else
+        log "Skipping apt-get full-upgrade; use --full-upgrade for a full OS refresh"
+    fi
+
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
         feh \
         fbi \
@@ -156,6 +216,8 @@ install_systemd_services() {
 }
 
 main() {
+    parse_args "$@"
+
     if [[ "$(id -u)" -eq 0 ]]; then
         echo "Run this script as the pi user, not with sudo. It will call sudo when needed." >&2
         exit 1

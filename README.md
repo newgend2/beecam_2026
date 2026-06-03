@@ -10,7 +10,7 @@ script from this repo.
 On a fresh Raspberry Pi, paste this from the default `/home/pi` directory:
 
 ```bash
-sudo apt update && sudo apt install -y git && git clone https://github.com/newgend2/beecam_2026.git setup && cd setup && chmod +x beecam_install.sh scripts/beecam-init-data.sh && ./beecam_install.sh
+sudo apt update && sudo apt install -y git && git clone https://github.com/newgend2/beecam_2026.git setup && cd setup && chmod +x beecam_install.sh scripts/beecam-init-data.sh && ./beecam_install.sh --skip-apt-update
 ```
 
 If the repo has already been cloned, rerun the installer with:
@@ -22,7 +22,7 @@ cd ~/setup && git pull && chmod +x beecam_install.sh scripts/beecam-init-data.sh
 The installer:
 
 - installs the DATA partition initializer
-- installs apt packages
+- installs apt packages without running a full OS upgrade by default
 - installs `astral` and `adafruit-circuitpython-ssd1306` into system Python with `--break-system-packages`
 - installs Witty Pi software
 - replaces Witty Pi scripts with the repo versions
@@ -36,6 +36,15 @@ The installer:
 The source folders inside `/home/pi/setup` remain there after installation. The
 installer also copies BeeCam runtime files to `/home/pi/beecam` and Witty Pi
 scripts to `/home/pi/wittypi`.
+
+For a slower full OS refresh, run the installer with:
+
+```bash
+./beecam_install.sh --full-upgrade
+```
+
+Use `--skip-apt-update` only when `sudo apt update` was already run immediately
+before the installer.
 
 ## PC/Laptop Partitioning
 
