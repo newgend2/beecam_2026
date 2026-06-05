@@ -252,6 +252,10 @@ done
 
 echo "Including: ${INCLUDE[*]}"
 
+echo ""
+echo "Disk usage before transfer:"
+print_disk_usage "SD card DATA" "$SRC"
+
 # ── advisory space check ──────────────────────────────────────────────────────
 
 if [[ "$OSTYPE" == darwin* ]]; then
@@ -272,7 +276,7 @@ fi
 
 echo ""
 echo "Plan:"
-echo "  1. Zip ${INCLUDE[*]} → $DEST_ZIP"
+echo "  1. Zip ${INCLUDE[*]} → $DEST_ZIP (store-only, no compression)"
 echo "  2. Verify zip integrity"
 echo "  3. Delete from SD:   images_and_labels/  logs/  update_backups/  .Trash-*/"
 echo "  4. Keep on SD:       configs/  hostname"
@@ -296,15 +300,15 @@ if $HAS_PV; then
     else
         TOTAL_BYTES=$(du -sb "${INCLUDE[@]}" 2>/dev/null | awk '{s+=$1} END {print s}')
     fi
-    echo "Zipping and transferring..."
-    zip -r - "${INCLUDE[@]}" \
+    echo "Zipping and transferring without compression..."
+    zip -0 -r - "${INCLUDE[@]}" \
         -x "*.DS_Store" -x "__MACOSX*" \
         2>/dev/null \
         | pv -s "$TOTAL_BYTES" -N "Progress" \
         > "$DEST_ZIP"
 else
-    echo "Zipping and transferring (no progress bar)..."
-    zip -rq "$DEST_ZIP" "${INCLUDE[@]}" \
+    echo "Zipping and transferring without compression (no progress bar)..."
+    zip -0 -rq "$DEST_ZIP" "${INCLUDE[@]}" \
         -x "*.DS_Store" -x "__MACOSX*"
 fi
 
