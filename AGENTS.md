@@ -22,6 +22,23 @@ This repo supports the Beecam 2026 Raspberry Pi setup, including SD card prep, i
 - When editing install or SD card scripts, explain the risk and verification path.
 - Preserve user edits in the working tree.
 
+## Historical Fix Preservation
+
+- For prior fixes and design decisions, read `references/chat_history/README.md`.
+- Before editing capture, preview, Witty Pi schedule, offline update, transfer, install, or `/data` init logic, check the protected-fix summary in `references/chat_history/README.md`.
+- Do not accidentally remove these protected behaviors:
+  - class-aware NMS in the non-Nanodet YOLO path before stale detection;
+  - model captures saving the main buffer from the same completed preview/lores request;
+  - stale detection without periodic refresh captures or confidence-jump reactivation;
+  - Witty Pi `WAIT` states skipping externally managed schedule endpoints;
+  - `/data` mount checks before BeeCam runtime/update/capture writes;
+  - `offline_update` working over SSH/rsync without camera-side internet;
+  - transfer archives using store-only zip with `unzip -t` verification before deletion;
+  - transfer cleanup of `images_and_labels/`, `logs/`, `update_backups/`, and `.Trash-*`, followed by sync and DATA unmount;
+  - BeeCam install keeping `apt-get full-upgrade` opt-in, not default;
+  - first-boot config seeding that does not overwrite existing `/data/configs`.
+- If a requested change conflicts with a protected behavior, call that out before editing.
+
 ## Verification
 
 - For shell scripts, run syntax checks when practical:
