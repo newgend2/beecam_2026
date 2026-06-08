@@ -7,8 +7,8 @@ dtparam=i2c_arm=on
 #dtparam=i2s=on
 #dtparam=spi=on
 
-# Enable audio (loads snd_bcm2835)
-dtparam=audio=on
+# Disable unused audio hardware for BeeCam.
+dtparam=audio=off
 
 # Additional overlays and parameters are documented
 # /boot/firmware/overlays/README
@@ -51,5 +51,6 @@ dtoverlay=dwc2,dr_mode=host
 [all]
 dtparam=i2c1=on
 dtparam=i2c_arm=on
-dtoverlay=miniuart-bt
+dtoverlay=disable-wifi
+dtoverlay=disable-bt
 dtoverlay=i2c-rtc,ds3231

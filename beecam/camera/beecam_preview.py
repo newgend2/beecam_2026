@@ -116,7 +116,7 @@ def read_config(config_path: str) -> AppConfig:
         stale_area_ratio_max=getfloat("stale_detection", "area_ratio_max", fallback=2.00),
         ae_enable=getbool("exposure", "ae_enable", fallback=True),
         ae_exposure_mode=get("exposure", "ae_exposure_mode", fallback="short").strip().lower(),
-        preview_backend=get("debug", "preview_backend", fallback="qt").strip().lower(),
+        preview_backend="drm",
     )
 
 
@@ -137,7 +137,7 @@ def preview_enum(name: str):
         "drm": Preview.DRM,
         "null": Preview.NULL,
     }
-    return mapping.get(name, Preview.QT)
+    return mapping.get(name, Preview.DRM)
 
 
 class Detection:
@@ -436,6 +436,7 @@ def draw_detections(request, stream="main"):
 def get_args():
     p = argparse.ArgumentParser()
     p.add_argument("--config", default="/home/pi/data/configs/camera_config_final.ini")
+    p.add_argument("--preview-backend", choices=("drm", "qt", "qtgl", "null"))
     return p.parse_args()
 
 
@@ -444,6 +445,8 @@ def main():
 
     args = get_args()
     cfg = read_config(args.config)
+    if args.preview_backend:
+        cfg.preview_backend = args.preview_backend
 
     imx500 = IMX500(cfg.model_path)
     intrinsics = imx500.network_intrinsics

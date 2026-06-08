@@ -111,10 +111,9 @@ class AppConfig:
     oled_enabled: bool
     oled_refresh_sec: float
 
-    debug_preview: bool
-    draw_detections: bool
-    show_saved_overlay: bool
-    preview_backend: str | None
+    log_stale_detections: bool
+    log_capture_queue: bool
+    log_startup: bool
     fps_log_interval_sec: float
 
     timelapse_enabled: bool
@@ -133,8 +132,6 @@ class SharedStatus:
     schedule_message: str | None = None
     startup_short: str = "--:--"
     shutdown_short: str = "--:--"
-    saved_flash_until: float = 0.0
-    last_saved_stem: str = ""
     stop_due_to_storage: bool = False
     storage_locked: bool = False
     capture_mode_label: str = "MODEL"
@@ -153,9 +150,9 @@ class SaveJob:
     label_path: str
     detections: list | None
     request: object
-    queued_monotonic: float
-    queued_wall: str
-    sensor_timestamp_ns: int | None
+    queued_monotonic: float | None
+    queued_wall: str | None
+    frame_age_ms: float | None
 
 
 @dataclass
@@ -232,8 +229,6 @@ def read_config(config_path: str) -> AppConfig:
     analogue_gain = float(analogue_gain) if analogue_gain else None
 
     postprocess = get("model", "postprocess", fallback="").strip() or None
-    preview_backend = get("debug", "preview_backend", fallback="").strip() or None
-
     return AppConfig(
         model_path=os.path.expanduser(get("model", "model_path", fallback="")),
         labels_path=os.path.expanduser(get("model", "labels_path", fallback="")),
@@ -265,7 +260,7 @@ def read_config(config_path: str) -> AppConfig:
         stale_expire_sec=getfloat("stale_detection", "expire_sec", fallback=3.0),
         stale_area_ratio_min=getfloat("stale_detection", "area_ratio_min", fallback=0.50),
         stale_area_ratio_max=getfloat("stale_detection", "area_ratio_max", fallback=2.00),
-        stale_log_interval_sec=getfloat("stale_detection", "log_interval_sec", fallback=5.0),
+        stale_log_interval_sec=getfloat("debug", "stale_log_interval_sec", fallback=5.0),
 
         ae_enable=getbool("exposure", "ae_enable", fallback=True),
         ae_exposure_mode=get("exposure", "ae_exposure_mode", fallback="short").strip().lower(),
@@ -281,10 +276,9 @@ def read_config(config_path: str) -> AppConfig:
         oled_enabled=getbool("oled", "enabled", fallback=True),
         oled_refresh_sec=getfloat("oled", "refresh_sec", fallback=1.0),
 
-        debug_preview=getbool("debug", "debug_preview", fallback=False),
-        draw_detections=getbool("debug", "draw_detections", fallback=False),
-        show_saved_overlay=getbool("debug", "show_saved_overlay", fallback=True),
-        preview_backend=preview_backend,
+        log_stale_detections=getbool("debug", "log_stale_detections", fallback=False),
+        log_capture_queue=getbool("debug", "log_capture_queue", fallback=False),
+        log_startup=getbool("debug", "log_startup", fallback=False),
         fps_log_interval_sec=getfloat("debug", "fps_log_interval_sec", fallback=0.0),
 
         timelapse_enabled=getbool("timelapse", "enabled", fallback=False),
@@ -464,13 +458,18 @@ def parse_schedule_wpi(path: str):
 
 
 class OledDisplay:
-    def __init__(self):
+    def __init__(self, enabled: bool = True, log_errors: bool = False):
         self.enabled = False
+        self.log_errors = log_errors
         self.width = 128
         self.height = 64
 
+        if not enabled:
+            return
+
         if not OLED_AVAILABLE:
-            print("OLED libraries not available; continuing without display", file=sys.stderr)
+            if self.log_errors:
+                print("OLED libraries not available; continuing without display", file=sys.stderr)
             return
 
         try:
@@ -481,7 +480,8 @@ class OledDisplay:
             self._disp.show()
             self.enabled = True
         except Exception as e:
-            print(f"OLED init failed: {e}", file=sys.stderr)
+            if self.log_errors:
+                print(f"OLED init failed: {e}", file=sys.stderr)
             self.enabled = False
 
     def show_lines(self, lines, line_height=12):
@@ -503,7 +503,8 @@ class OledDisplay:
             self._disp.image(image)
             self._disp.show()
         except Exception as e:
-            print(f"OLED render failed: {e}", file=sys.stderr)
+            if self.log_errors:
+                print(f"OLED render failed: {e}", file=sys.stderr)
 
     def clear(self):
         if not self.enabled:
@@ -565,7 +566,7 @@ class StorageMonitor(threading.Thread):
                         status.stop_due_to_storage = True
                         status.storage_locked = True
                         status.state = "FULL"
-                    elif not status.storage_locked and status.state not in {"DETECTION", "SAVED", "TIMELAPSE", "INIT"}:
+                    elif not status.storage_locked and status.state not in {"DETECTION", "TIMELAPSE", "INIT"}:
                         status.state = "SCANNING"
             except Exception as e:
                 log_exception_event("storage_monitor_error", "Storage monitor exception", e)
@@ -863,7 +864,11 @@ def filter_stale_detections(detections):
 
         update_track_from_detection(track, detection, now_mono)
 
-    if suppressed and now_mono - last_stale_suppression_log >= cfg.stale_log_interval_sec:
+    if (
+        cfg.log_stale_detections
+        and suppressed
+        and now_mono - last_stale_suppression_log >= cfg.stale_log_interval_sec
+    ):
         print(
             f"Stale detections suppressed: fresh={len(fresh)} suppressed={len(suppressed)} "
             f"tracks={len(stale_tracks)} total_suppressed={stale_suppressed_total}",
@@ -991,16 +996,19 @@ class AsyncSaveWorker(threading.Thread):
                 job.request.save(CAPTURE_STREAM, job.image_path)
                 if job.detections is not None:
                     write_label_txt(job.label_path, job.detections)
-                    print(f"Saved: {job.label_path}", flush=True)
 
                 detection_count = len(job.detections) if job.detections is not None else 0
-                save_delay_ms = (time.monotonic() - job.queued_monotonic) * 1000.0
-                print(
-                    f"Capture saved: {job.image_path} detections={detection_count} "
-                    f"queued_at={job.queued_wall} saved_at={format_wall_time_with_ms()} "
-                    f"save_delay_ms={save_delay_ms:.1f}",
-                    flush=True,
-                )
+                if cfg.log_capture_queue and job.queued_monotonic is not None:
+                    save_delay_ms = (time.monotonic() - job.queued_monotonic) * 1000.0
+                    frame_age_text = f" frame_age_ms={job.frame_age_ms:.1f}" if job.frame_age_ms is not None else ""
+                    print(
+                        f"Capture saved: {job.image_path} detections={detection_count} "
+                        f"queued_at={job.queued_wall} saved_at={format_wall_time_with_ms()} "
+                        f"save_delay_ms={save_delay_ms:.1f}{frame_age_text}",
+                        flush=True,
+                    )
+                else:
+                    print(f"Capture saved: {job.image_path} detections={detection_count}", flush=True)
                 update_saved_status(job.stem)
                 success = True
             except Exception as e:
@@ -1027,7 +1035,8 @@ def start_async_save_worker():
     save_stop_event = threading.Event()
     save_worker = AsyncSaveWorker(save_queue, save_stop_event)
     save_worker.start()
-    print(f"Async saver started queue_size={maxsize}", flush=True)
+    if cfg.log_startup:
+        print(f"Async saver started queue_size={maxsize}", flush=True)
 
 
 def stop_async_save_worker(timeout: float = 10.0):
@@ -1055,36 +1064,9 @@ def raise_async_save_error_if_any():
         raise RuntimeError(f"Async save worker failed: {error}") from error
 
 
-def draw_debug_detections(request, stream=DETECTION_STREAM):
-    if not cfg.draw_detections:
-        return
-
-    try:
-        from picamera2 import MappedArray
-        import cv2
-    except Exception:
-        return
-
-    detections = last_detections
-    labels = get_labels() if intrinsics is not None else []
-
-    with MappedArray(request, stream) as m:
-        for d in detections:
-            x, y, w, h = [int(round(v)) for v in d.box]
-            label = labels[d.category] if 0 <= d.category < len(labels) else str(d.category)
-            text = f"{label} {d.conf:.2f}"
-            cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(m.array, text, (x + 3, max(12, y + 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-
-        if cfg.show_saved_overlay and time.monotonic() < status.saved_flash_until:
-            cv2.putText(m.array, "SAVED", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-
-
 def update_saved_status(stem: str):
     with status_lock:
         status.image_count_today += 1
-        status.saved_flash_until = time.monotonic() + 1.0
-        status.last_saved_stem = stem
         if status.storage_locked:
             status.state = "FULL"
         elif cfg.timelapse_enabled:
@@ -1129,7 +1111,6 @@ def capture_still(stem: str, detections=None, request=None):
 
         if detections is not None:
             write_label_txt(label_path, detections)
-            print(f"Saved: {label_path}", flush=True)
         last_capture_time = time.monotonic()
         detection_count = len(detections) if detections is not None else 0
         print(f"Capture saved: {image_path} detections={detection_count}", flush=True)
@@ -1158,15 +1139,13 @@ def queue_capture_still(stem: str, detections, request, metadata):
     images_dir, labels_dir = dated_dirs(cfg.save_root)
     image_path = os.path.join(images_dir, f"{stem}.jpg")
     label_path = os.path.join(labels_dir, f"{stem}.txt")
-    queued_monotonic = time.monotonic()
-    queued_wall = format_wall_time_with_ms()
-    queued_monotonic_ns = time.monotonic_ns()
-    frame_age_ms = sensor_age_ms(metadata, queued_monotonic_ns)
-    sensor_timestamp = metadata.get("SensorTimestamp")
-    try:
-        sensor_timestamp_ns = int(sensor_timestamp) if sensor_timestamp is not None else None
-    except (TypeError, ValueError):
-        sensor_timestamp_ns = None
+    queued_monotonic = None
+    queued_wall = None
+    frame_age_ms = None
+    if cfg.log_capture_queue:
+        queued_monotonic = time.monotonic()
+        queued_wall = format_wall_time_with_ms()
+        frame_age_ms = sensor_age_ms(metadata, time.monotonic_ns())
     job = SaveJob(
         stem=stem,
         image_path=image_path,
@@ -1175,7 +1154,7 @@ def queue_capture_still(stem: str, detections, request, metadata):
         request=request,
         queued_monotonic=queued_monotonic,
         queued_wall=queued_wall,
-        sensor_timestamp_ns=sensor_timestamp_ns,
+        frame_age_ms=frame_age_ms,
     )
 
     request.acquire()
@@ -1185,7 +1164,7 @@ def queue_capture_still(stem: str, detections, request, metadata):
         request.release()
         _record_async_save_dropped()
         now_mono = time.monotonic()
-        if now_mono - last_save_queue_full_log >= 5.0:
+        if cfg.log_capture_queue and now_mono - last_save_queue_full_log >= 5.0:
             print(
                 f"Async save queue full; dropping capture request pending_saves={save_queue.qsize()} "
                 f"total_dropped={get_async_saves_dropped()}",
@@ -1201,13 +1180,14 @@ def queue_capture_still(stem: str, detections, request, metadata):
     last_capture_time = time.monotonic()
     with status_lock:
         status.state = "DETECTION"
-    detection_count = len(detections) if detections is not None else 0
-    frame_age_text = f" frame_age_ms={frame_age_ms:.1f}" if frame_age_ms is not None else ""
-    print(
-        f"Capture grabbed: {image_path} detections={detection_count} "
-        f"queued_at={queued_wall}{frame_age_text} pending_saves={save_queue.qsize()}",
-        flush=True,
-    )
+    if cfg.log_capture_queue:
+        detection_count = len(detections) if detections is not None else 0
+        frame_age_text = f" frame_age_ms={frame_age_ms:.1f}" if frame_age_ms is not None else ""
+        print(
+            f"Capture grabbed: {image_path} detections={detection_count} "
+            f"queued_at={queued_wall}{frame_age_text} pending_saves={save_queue.qsize()}",
+            flush=True,
+        )
     return True
 
 
@@ -1232,14 +1212,6 @@ def get_args():
     p = argparse.ArgumentParser()
     p.add_argument("--config", default="camera_config.ini")
     return p.parse_args()
-
-
-def maybe_get_preview_arg():
-    if not cfg.debug_preview:
-        return False
-    if cfg.preview_backend:
-        return cfg.preview_backend
-    return True
 
 
 def build_camera_objects():
@@ -1268,11 +1240,12 @@ def build_camera_objects():
                 intrinsics.labels = f.read().splitlines()
 
         intrinsics.update_with_defaults()
-        print(
-            f"Detection config: postprocess={intrinsics.postprocess} "
-            f"threshold={cfg.threshold} iou={cfg.iou}",
-            flush=True,
-        )
+        if cfg.log_startup:
+            print(
+                f"Detection config: postprocess={intrinsics.postprocess} "
+                f"threshold={cfg.threshold} iou={cfg.iou}",
+                flush=True,
+            )
         picam2 = Picamera2(imx500.camera_num)
     else:
         # Timelapse mode uses a still-only camera pipeline and skips model inference.
@@ -1320,17 +1293,14 @@ def build_camera_objects():
             buffer_count=cfg.buffer_count_still,
         )
 
-    if (cfg.draw_detections or cfg.show_saved_overlay) and not cfg.timelapse_enabled:
-        picam2.pre_callback = draw_debug_detections
-
-
 def configure_inference_roi():
     if imx500 is None or intrinsics is None:
         return
 
     if intrinsics.preserve_aspect_ratio:
         imx500.set_auto_aspect_ratio()
-        print(f"IMX500 inference ROI: auto aspect ratio input_size={imx500.get_input_size()}", flush=True)
+        if cfg.log_startup:
+            print(f"IMX500 inference ROI: auto aspect ratio input_size={imx500.get_input_size()}", flush=True)
         return
 
     full_roi = (0, 0, cfg.still_width, cfg.still_height)
@@ -1341,7 +1311,8 @@ def configure_inference_roi():
         pass
 
     imx500.set_inference_roi_abs(full_roi)
-    print(f"IMX500 inference ROI: full sensor {full_roi}", flush=True)
+    if cfg.log_startup:
+        print(f"IMX500 inference ROI: full sensor {full_roi}", flush=True)
 
 
 def stay_alive_storage_locked(stop_event: threading.Event):
@@ -1358,7 +1329,10 @@ def stay_alive_storage_locked(stop_event: threading.Event):
 def main():
     global cfg
 
-    oled = OledDisplay()
+    args = get_args()
+    cfg = read_config(args.config)
+
+    oled = OledDisplay(enabled=cfg.oled_enabled, log_errors=cfg.log_startup)
     _oled_show_safe(oled, [
         f"{hostname} {datetime.now().strftime('%m-%d %H:%M')}",
         "Initializing...",
@@ -1366,12 +1340,6 @@ def main():
         "",
         "INIT",
     ])
-
-    args = get_args()
-    cfg = read_config(args.config)
-
-    if not cfg.oled_enabled:
-        oled.enabled = False
 
     write_hostname_marker()
 
@@ -1413,13 +1381,13 @@ def main():
     try:
         build_camera_objects()
 
-        if imx500 is not None:
+        if imx500 is not None and cfg.log_startup:
             imx500.show_network_fw_progress_bar()
 
         if cfg.timelapse_enabled:
-            picam2.start(still_config, show_preview=maybe_get_preview_arg())
+            picam2.start(still_config, show_preview=False)
         else:
-            picam2.start(preview_config, show_preview=maybe_get_preview_arg())
+            picam2.start(preview_config, show_preview=False)
             start_async_save_worker()
 
         configure_inference_roi()
@@ -1427,14 +1395,18 @@ def main():
         with status_lock:
             status.state = "TIMELAPSE" if cfg.timelapse_enabled else "SCANNING"
 
-        print("beecam_capture_final started")
-        fps_window_start = time.monotonic()
-        fps_request_count = 0
-        fps_inference_count = 0
-        fps_queued_count = 0
-        fps_stale_suppressed_count = 0
-        fps_saved_start = get_async_saves_completed()
-        fps_dropped_start = get_async_saves_dropped()
+        if cfg.log_startup:
+            print("beecam_capture_final started")
+
+        fps_logging_enabled = cfg.fps_log_interval_sec > 0
+        if fps_logging_enabled:
+            fps_window_start = time.monotonic()
+            fps_request_count = 0
+            fps_inference_count = 0
+            fps_queued_count = 0
+            fps_stale_suppressed_count = 0
+            fps_saved_start = get_async_saves_completed()
+            fps_dropped_start = get_async_saves_dropped()
 
         while True:
             raise_async_save_error_if_any()
@@ -1464,17 +1436,21 @@ def main():
                 fresh_detections = detections
                 stale_detections = []
 
-                fps_request_count += 1
+                if fps_logging_enabled:
+                    fps_request_count += 1
                 if has_current_inference:
-                    fps_inference_count += 1
+                    if fps_logging_enabled:
+                        fps_inference_count += 1
                     fresh_detections, stale_detections = filter_stale_detections(detections)
-                    fps_stale_suppressed_count += len(stale_detections)
+                    if fps_logging_enabled:
+                        fps_stale_suppressed_count += len(stale_detections)
 
                 if fresh_detections and has_current_inference:
                     if capture_full_res_image(fresh_detections, request, metadata):
-                        fps_queued_count += 1
+                        if fps_logging_enabled:
+                            fps_queued_count += 1
 
-                if cfg.fps_log_interval_sec > 0:
+                if fps_logging_enabled:
                     now_mono = time.monotonic()
                     elapsed = now_mono - fps_window_start
                     if elapsed >= cfg.fps_log_interval_sec:

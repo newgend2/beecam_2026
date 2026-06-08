@@ -36,6 +36,8 @@ This repo supports the Beecam 2026 Raspberry Pi setup, including SD card prep, i
   - transfer cleanup of `images_and_labels/`, `logs/`, `update_backups/`, and `.Trash-*`, followed by sync and rootfs unmount;
   - BeeCam install keeping `apt-get full-upgrade` opt-in, not default;
   - first-boot config seeding that does not overwrite existing `/home/pi/data/configs`.
+  - quiet BeeCam journal defaults: normal image-save messages by default, with stale/FPS/queue/startup logs opt-in under `[debug]`;
+  - production capture OLED model states limited to `SCANNING` and `DETECTION`, with no old `SAVED` overlay/state path.
 - The older separate-partition guardrails were intentionally superseded by the rootfs data-directory migration.
 - If a requested change conflicts with a protected behavior, call that out before editing.
 

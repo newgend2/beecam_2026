@@ -3,8 +3,9 @@ Description=BeeCam headless capture service
 # Start after the system has reached the normal multi-user state.
 # This does NOT mean "after Witty Pi finished everything";
 # it only controls normal systemd ordering.
-After=multi-user.target beecam-init-data.service
+After=multi-user.target beecam-init-data.service beecam-oled-boot.service
 Requires=beecam-init-data.service
+Wants=beecam-oled-boot.service
 
 # Disable start-rate limiting so repeated crash/restart cycles do not
 # permanently stop restart attempts.

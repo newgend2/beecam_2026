@@ -36,7 +36,7 @@ The installer:
 - replaces Witty Pi scripts with the repo versions
 - copies BeeCam code into `/home/pi/beecam`
 - updates `/boot/firmware/cmdline.txt`
-- replaces `/boot/firmware/config.txt`
+- replaces `/boot/firmware/config.txt`, disabling Wi-Fi, Bluetooth, and audio while preserving HDMI/framebuffer support
 - installs systemd services
 
 The source folders inside `/home/pi/setup` remain there after installation. The
@@ -71,7 +71,25 @@ archive with `unzip -t`, cleans transferred capture/log/update data from
 `beecam.service` is installed but intentionally not enabled. Witty Pi starts it
 from `wittypi/afterStartup.sh` and stops it from `wittypi/beforeShutdown.sh`.
 
-All other service files in `systemd_services/` are enabled by the installer.
+All other service files in `systemd_services/` are enabled by the installer,
+including `beecam-oled-boot.service`. The OLED boot service is a short oneshot:
+it shows an early splash only when `[oled] enabled = true` in
+`/home/pi/data/configs/camera_config_final.ini`, then exits. Live OLED updates
+still come from `beecam_capture_final.py`.
+
+Wi-Fi is disabled in the BeeCam boot config to save power. Use Ethernet for SSH
+and NTP time sync.
+
+## Logging And Debugging
+
+By default, normal `journalctl -u beecam.service` output is quiet and records
+image-save messages during capture. Stale-detection logs, FPS logs, queue timing
+logs, and startup/config logs are opt-in under the `[debug]` section of
+`camera_config_final.ini`.
+
+HDMI/framebuffer preview debugging remains available through
+`beecam_preview.py`, with DRM preview as the default and `--preview-backend` for
+overrides.
 
 ## Field Runtime Updates
 
@@ -85,7 +103,8 @@ ssh pi@cam7 'cd ~/setup && git pull --ff-only && chmod +x scripts/beecam-update-
 The updater backs up the current runtime files under
 `/home/pi/data/update_backups/` before replacing them. It deploys only the
 production camera Python scripts (`beecam_capture_final.py` and
-`beecam_preview.py`) to `/home/pi/beecam/camera`, and overwrites
+`beecam_preview.py`) to `/home/pi/beecam/camera`, updates
+`beecam-oled-boot.service`, and overwrites
 `/home/pi/data/configs/camera_config_final.ini`.
 
 ## Troubleshooting

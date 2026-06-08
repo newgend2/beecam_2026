@@ -48,8 +48,18 @@ Important preserved behavior:
   still-only `capture_file` path.
 - Detection and stale matching use preview/lores coordinates. Saved labels are
   scaled from preview/lores coordinates to the full still image.
-- Startup/debug logging for detection settings and capture saves is useful for
-  `journalctl -u beecam -f`; preserve or replace it with equivalent visibility.
+- Normal `journalctl -u beecam.service` output is intentionally quiet by
+  default and should show image-save messages during ordinary capture. Stale
+  suppression logs, FPS counters/logs, queue timing logs, and startup/config/ROI
+  logs are opt-in through `[debug]`.
+- FPS bookkeeping should stay disabled unless `debug.fps_log_interval_sec > 0`
+  so normal capture avoids unnecessary per-frame accounting.
+- Normal model-detection OLED state should be either `SCANNING` or `DETECTION`;
+  the old `SAVED` state/overlay path was intentionally removed. Lifecycle and
+  error states such as `INIT`, `FULL`, `STOPPING`, and `RESTART` are still
+  allowed.
+- Production capture no longer owns HDMI/debug preview overlays. Use
+  `beecam_preview.py` for HDMI/framebuffer camera debugging.
 
 ### Witty Pi Schedule Handling
 
@@ -157,6 +167,10 @@ Important preserved behavior:
   `/home/pi/data` on the root filesystem.
 - BeeCam startup, runtime update, and capture code should use
   `/home/pi/data`, and storage fullness checks should measure that rootfs.
+- BeeCam uses a short `beecam-oled-boot.service` oneshot for early OLED boot
+  visibility. It reads `/home/pi/data/configs/camera_config_final.ini`, exits
+  immediately when `[oled] enabled = false`, and should not introduce a
+  long-running OLED daemon or `/run/beecam/status.json` style status file.
 - Default configs seed from the repo copy at `/home/pi/setup/configs` to
   `/home/pi/data/configs` only when `/home/pi/data/configs` does not already
   exist. Existing field-edited configs should not be overwritten on boot.

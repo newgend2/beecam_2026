@@ -1,0 +1,14 @@
+[Unit]
+Description=Show BeeCam OLED boot splash
+After=local-fs.target beecam-init-data.service
+Requires=beecam-init-data.service
+Before=wittypi.service beecam.service
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+ExecStart=/usr/bin/python3 /home/pi/beecam/oled_boot_splash.py --config /home/pi/data/configs/camera_config_final.ini
+
+[Install]
+WantedBy=multi-user.target

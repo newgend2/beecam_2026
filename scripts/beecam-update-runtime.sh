@@ -9,6 +9,7 @@ APP_DIR="${PI_HOME}/beecam"
 DATA_ROOT="${PI_HOME}/data"
 DATA_CONFIG_DIR="${DATA_ROOT}/configs"
 SERVICE_FILE="/etc/systemd/system/beecam.service"
+OLED_BOOT_SERVICE_FILE="/etc/systemd/system/beecam-oled-boot.service"
 CAPTURE_SCRIPT="beecam_capture_final.py"
 DO_GIT_PULL=false
 RESTART_MODE="auto"
@@ -29,7 +30,7 @@ Options:
 Updates only runtime files:
   - /home/pi/beecam, excluding relegated reference scripts
   - /home/pi/data/configs/camera_config_final.ini, overwritten from this repo
-  - /etc/systemd/system/beecam.service
+  - /etc/systemd/system/beecam.service and beecam-oled-boot.service
 
 It does not install apt packages, Witty Pi, boot files, or partition anything.
 USAGE
@@ -96,8 +97,10 @@ if [[ "$(id -u)" -eq 0 ]]; then
 fi
 
 require_file "${REPO_DIR}/beecam"
+require_file "${REPO_DIR}/beecam/oled_boot_splash.py"
 require_file "${REPO_DIR}/configs/camera_config_final.ini"
 require_file "${REPO_DIR}/systemd_services/beecam.service"
+require_file "${REPO_DIR}/systemd_services/beecam-oled-boot.service"
 
 if $DO_GIT_PULL; then
     log "Pulling latest repo changes"
@@ -135,6 +138,9 @@ fi
 if [[ -f "$SERVICE_FILE" ]]; then
     sudo cp "$SERVICE_FILE" "${BACKUP_ROOT}/beecam.service"
 fi
+if [[ -f "$OLED_BOOT_SERVICE_FILE" ]]; then
+    sudo cp "$OLED_BOOT_SERVICE_FILE" "${BACKUP_ROOT}/beecam-oled-boot.service"
+fi
 
 log "Updating /home/pi/beecam"
 sudo rm -rf "$APP_DIR"
@@ -156,7 +162,11 @@ sed "s#ExecStart=.*#ExecStart=/usr/bin/python3 /home/pi/beecam/camera/${CAPTURE_
     "${REPO_DIR}/systemd_services/beecam.service" > "$tmp_service"
 sudo install -m 0644 "$tmp_service" "$SERVICE_FILE"
 rm -f "$tmp_service"
+
+log "Updating beecam-oled-boot.service"
+sudo install -m 0644 "${REPO_DIR}/systemd_services/beecam-oled-boot.service" "$OLED_BOOT_SERVICE_FILE"
 sudo systemctl daemon-reload
+sudo systemctl enable beecam-oled-boot.service
 
 if [[ "$RESTART_MODE" == "yes" || ( "$RESTART_MODE" == "auto" && "$SERVICE_WAS_ACTIVE" == "true" ) ]]; then
     log "Starting beecam.service"

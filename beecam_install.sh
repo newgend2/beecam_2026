@@ -200,6 +200,9 @@ install_boot_files() {
         echo "Failed to replace ${boot_dir}/config.txt" >&2
         exit 1
     fi
+
+    log "Disabling Bluetooth UART service"
+    sudo systemctl disable --now hciuart 2>/dev/null || true
 }
 
 install_systemd_services() {
