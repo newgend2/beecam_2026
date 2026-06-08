@@ -2,7 +2,7 @@
 set -euo pipefail
 
 UTIL_DIR="/home/pi/wittypi"
-CONFIG_PATH="/data/configs/schedule.conf"
+CONFIG_PATH="/home/pi/data/configs/schedule.conf"
 TIMEZONE="$(
     awk -F= '$1 ~ /^[[:space:]]*TIMEZONE[[:space:]]*$/ { gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit }' "$CONFIG_PATH" 2>/dev/null || true
 )"

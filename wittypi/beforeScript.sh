@@ -14,7 +14,7 @@ set -euo pipefail
 /usr/local/sbin/beecam-init-data.sh
 
 VENV_PY="/usr/bin/python3"
-LOGFILE="/data/logs/before_script.log"
+LOGFILE="/home/pi/data/logs/before_script.log"
 SCHEDULE_FILE="/home/pi/wittypi/schedule.wpi"
 GENERATOR="/home/pi/beecam/schedule/generate_wittypi_schedule.py"
 

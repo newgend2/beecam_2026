@@ -1,5 +1,5 @@
 [Unit]
-Description=Initialize BeeCam DATA partition
+Description=Initialize BeeCam rootfs data directory
 After=local-fs.target
 Before=beecam.service
 

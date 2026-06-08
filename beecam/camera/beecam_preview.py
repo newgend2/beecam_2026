@@ -435,7 +435,7 @@ def draw_detections(request, stream="main"):
 
 def get_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--config", default="/data/configs/camera_config_final.ini")
+    p.add_argument("--config", default="/home/pi/data/configs/camera_config_final.ini")
     return p.parse_args()
 
 

@@ -30,6 +30,7 @@ except Exception:  # pragma: no cover - depends on Raspberry Pi hardware libs
 
 
 hostname = socket.gethostname()
+DATA_ROOT = "/home/pi/data"
 cfg = None
 log_lock = threading.Lock()
 status_lock = threading.Lock()
@@ -106,9 +107,9 @@ def read_config(config_path: str) -> AppConfig:
 
     return AppConfig(
         unit_name=unit_name,
-        save_root=os.path.expanduser(get("weather", "save_root", fallback="/data/weather")),
+        save_root=os.path.expanduser(get("weather", "save_root", fallback=f"{DATA_ROOT}/weather")),
         sample_interval_sec=getfloat("weather", "sample_interval_sec", fallback=2.0),
-        storage_check_path=os.path.expanduser(get("storage", "check_path", fallback="/data")),
+        storage_check_path=os.path.expanduser(get("storage", "check_path", fallback=DATA_ROOT)),
         storage_stop_percent=getfloat("storage", "stop_percent", fallback=97.0),
         storage_check_interval_sec=getfloat("storage", "check_interval_sec", fallback=60.0),
         schedule_wpi_path=os.path.expanduser(
@@ -119,7 +120,7 @@ def read_config(config_path: str) -> AppConfig:
         restart_on_exception=getbool("service", "restart_on_exception", fallback=True),
         restart_delay_sec=getfloat("service", "restart_delay_sec", fallback=2.0),
         exception_log_path=os.path.expanduser(
-            get("logging", "exception_log_path", fallback="/data/logs/weather_station_exception_log.csv")
+            get("logging", "exception_log_path", fallback=f"{DATA_ROOT}/logs/weather_station_exception_log.csv")
         ),
         wind_calibration=WindCalibration(
             voltage_offset=getfloat("wind", "voltage_offset", fallback=0.00575),
@@ -146,7 +147,7 @@ def format_exception_name_and_message(exc: BaseException) -> str:
 def log_exception_event(event_type: str, message: str, exc: BaseException | None = None) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     detail = str(exc) if exc is not None else ""
-    path = cfg.exception_log_path if cfg is not None else "/data/logs/weather_station_exception_log.csv"
+    path = cfg.exception_log_path if cfg is not None else f"{DATA_ROOT}/logs/weather_station_exception_log.csv"
 
     directory = os.path.dirname(path)
     if directory:
@@ -486,13 +487,14 @@ def restart_self(reason: str, oled: OledDisplay | None = None) -> None:
 
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="/data/configs/weather_station_config.ini")
+    parser.add_argument("--config", default=f"{DATA_ROOT}/configs/weather_station_config.ini")
     return parser.parse_args()
 
 
 def write_hostname_file() -> None:
     try:
-        with open("/data/hostname", "w", encoding="utf-8") as f:
+        os.makedirs(DATA_ROOT, exist_ok=True)
+        with open(os.path.join(DATA_ROOT, "hostname"), "w", encoding="utf-8") as f:
             f.write(hostname + "\n")
     except Exception:
         pass

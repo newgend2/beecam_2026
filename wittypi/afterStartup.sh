@@ -10,12 +10,7 @@
 
 
 if ! /usr/local/sbin/beecam-init-data.sh; then
-    echo "afterStartup.sh: /data initialization failed; not starting beecam.service" >&2
-    exit 1
-fi
-
-if ! /usr/bin/mountpoint -q /data; then
-    echo "afterStartup.sh: /data is not mounted; not starting beecam.service" >&2
+    echo "afterStartup.sh: data directory initialization failed; not starting beecam.service" >&2
     exit 1
 fi
 

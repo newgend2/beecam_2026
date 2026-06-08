@@ -1,5 +1,5 @@
 [Unit]
-Description=Create WittyPi log symlinks on /data
+Description=Create WittyPi log symlinks in weather station data directory
 After=local-fs.target weather-station-init-data.service
 Requires=weather-station-init-data.service
 Before=wittypi.service
@@ -8,9 +8,10 @@ Before=wittypi.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/bash -c '\
-  mkdir -p /data/logs && \
-  [ -L /home/pi/wittypi/wittyPi.log ]  || { rm -f /home/pi/wittypi/wittyPi.log;  ln -s /data/logs/wittyPi.log  /home/pi/wittypi/wittyPi.log; } && \
-  [ -L /home/pi/wittypi/schedule.log ] || { rm -f /home/pi/wittypi/schedule.log; ln -s /data/logs/schedule.log /home/pi/wittypi/schedule.log; }'
+  mkdir -p /home/pi/data/logs && \
+  chown pi:pi /home/pi/data/logs && \
+  [ "$(readlink /home/pi/wittypi/wittyPi.log 2>/dev/null)" = "/home/pi/data/logs/wittyPi.log" ]  || { rm -f /home/pi/wittypi/wittyPi.log;  ln -s /home/pi/data/logs/wittyPi.log  /home/pi/wittypi/wittyPi.log; } && \
+  [ "$(readlink /home/pi/wittypi/schedule.log 2>/dev/null)" = "/home/pi/data/logs/schedule.log" ] || { rm -f /home/pi/wittypi/schedule.log; ln -s /home/pi/data/logs/schedule.log /home/pi/wittypi/schedule.log; }'
 
 [Install]
 WantedBy=multi-user.target

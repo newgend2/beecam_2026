@@ -60,6 +60,7 @@ stale_suppressed_total = 0
 last_stale_suppression_log = 0.0
 
 hostname = socket.gethostname()
+DATA_ROOT = "/home/pi/data"
 
 
 @dataclass
@@ -271,7 +272,7 @@ def read_config(config_path: str) -> AppConfig:
         exposure_time_us=exposure_time_us,
         analogue_gain=analogue_gain,
 
-        storage_check_path=os.path.expanduser(get("storage", "check_path", fallback="/data")),
+        storage_check_path=os.path.expanduser(get("storage", "check_path", fallback=DATA_ROOT)),
         storage_stop_percent=getfloat("storage", "stop_percent", fallback=95.0),
         storage_check_interval_sec=getfloat("storage", "check_interval_sec", fallback=30.0),
 
@@ -291,7 +292,7 @@ def read_config(config_path: str) -> AppConfig:
 
         restart_on_exception=getbool("service", "restart_on_exception", fallback=True),
         restart_delay_sec=getfloat("service", "restart_delay_sec", fallback=2.0),
-        exception_log_path=os.path.expanduser(get("logging", "exception_log_path", fallback="/data/logs/beecam_exception_log.csv")),
+        exception_log_path=os.path.expanduser(get("logging", "exception_log_path", fallback=f"{DATA_ROOT}/logs/beecam_exception_log.csv")),
     )
 
 
@@ -397,30 +398,13 @@ def get_disk_used_percent(path: str) -> float:
     return (used / total) * 100.0
 
 
-def path_uses_data_mount(path: str) -> bool:
-    abs_path = os.path.abspath(path)
-    return abs_path == "/data" or abs_path.startswith("/data/")
-
-
-def require_data_mount(oled: object | None):
-    if cfg is None:
-        return
-    paths = [cfg.storage_check_path, cfg.save_root, cfg.exception_log_path]
-    if not any(path_uses_data_mount(path) for path in paths if path):
-        return
-    if os.path.ismount("/data"):
-        return
-
-    message = "/data is not mounted; refusing to write camera data to the root filesystem"
-    print(message, file=sys.stderr)
-    _oled_show_safe(oled, [
-        f"{hostname} {datetime.now().strftime('%m-%d %H:%M')}",
-        "Err: DATA mount",
-        "DATA not mounted",
-        "",
-        "Check SD card",
-    ], timeout=5.0)
-    raise RuntimeError(message)
+def write_hostname_marker():
+    try:
+        os.makedirs(DATA_ROOT, exist_ok=True)
+        with open(os.path.join(DATA_ROOT, "hostname"), "w", encoding="utf-8") as f:
+            f.write(hostname + "\n")
+    except Exception:
+        pass
 
 
 def shorten_schedule_time(dt_str: str) -> str:
@@ -1389,13 +1373,7 @@ def main():
     if not cfg.oled_enabled:
         oled.enabled = False
 
-    require_data_mount(oled)
-
-    try:
-        with open("/data/hostname", "w", encoding="utf-8") as f:
-            f.write(hostname + "\n")
-    except Exception:
-        pass
+    write_hostname_marker()
 
     schedule_info = parse_schedule_wpi(cfg.schedule_wpi_path)
     initial_count = count_today_images(cfg.save_root)

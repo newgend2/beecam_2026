@@ -1,35 +1,30 @@
 #!/usr/bin/env bash
-# Transfer BeeCam data from SD card to external SSD.
+# Transfer BeeCam data from an SD card rootfs mount to external storage.
 #
 # Usage:
-#   ./transfer_beecam.sh <sd_data_path> <dest_path>
+#   ./transfer_beecam.sh <mounted_rootfs_path> <dest_path>
 #
 # Arguments:
-#   sd_data_path   Mount point of the SD card /data exFAT partition
-#   dest_path      Destination directory on the external SSD
+#   mounted_rootfs_path   Mount point of the SD card Linux root filesystem
+#   dest_path             Destination directory on the external SSD
 #
-# Example (Linux):
-#   ./transfer_beecam.sh /media/user/DATA /media/user/BackupSSD
-# Example (macOS):
-#   ./transfer_beecam.sh /Volumes/DATA /Volumes/BackupSSD
+# Example:
+#   ./transfer_beecam.sh /media/user/rootfs /media/user/BackupSSD
 #
 # Requires: zip, unzip
-# Optional: pv  (progress bars — apt install pv / brew install pv)
+# Optional: pv  (progress bars - apt install pv)
 
 set -euo pipefail
-
-# ── helpers ──────────────────────────────────────────────────────────────────
 
 die() { echo "Error: $*" >&2; exit 1; }
 
 path_is_mountpoint() {
     local path="$1"
-    if command -v mountpoint &>/dev/null; then
+    if command -v mountpoint >/dev/null 2>&1; then
         mountpoint -q "$path"
         return
     fi
 
-    # Best-effort fallback for systems without mountpoint(1), such as macOS.
     local parent
     parent=$(dirname "$path")
     [[ "$(df -P "$path" 2>/dev/null | awk 'NR==2 {print $1}')" != "$(df -P "$parent" 2>/dev/null | awk 'NR==2 {print $1}')" ]]
@@ -38,7 +33,7 @@ path_is_mountpoint() {
 flush_filesystem() {
     local path="$1"
     echo "Flushing SD card writes..."
-    if sync -f "$path" &>/dev/null; then
+    if sync -f "$path" >/dev/null 2>&1; then
         return
     fi
     sync
@@ -57,7 +52,7 @@ print_disk_usage() {
 
 get_mount_source() {
     local path="$1"
-    if command -v findmnt &>/dev/null; then
+    if command -v findmnt >/dev/null 2>&1; then
         findmnt -n -o SOURCE --target "$path" 2>/dev/null | sed -n '1p'
         return
     fi
@@ -69,24 +64,10 @@ unmount_source() {
     local device="$2"
 
     echo ""
-    echo "Unmounting SD card DATA partition..."
-
-    # The script zipped from inside $SRC, so leave the mount before unmounting it.
+    echo "Unmounting SD card rootfs partition..."
     cd /
 
-    if [[ "$OSTYPE" == darwin* ]]; then
-        if diskutil unmount "$path" >/dev/null; then
-            echo "  Unmounted: $path"
-            return
-        fi
-        if [[ -n "$device" ]] && diskutil unmount "$device" >/dev/null; then
-            echo "  Unmounted: $device"
-            return
-        fi
-        die "Could not unmount $path. Close any windows or terminals using the SD card, then eject it manually."
-    fi
-
-    if [[ -n "$device" && "$device" == /dev/* ]] && command -v udisksctl &>/dev/null; then
+    if [[ -n "$device" && "$device" == /dev/* ]] && command -v udisksctl >/dev/null 2>&1; then
         if udisksctl unmount -b "$device" >/dev/null 2>&1; then
             echo "  Unmounted: $device"
             return
@@ -103,21 +84,12 @@ unmount_source() {
         return
     fi
 
-    if command -v sudo &>/dev/null && sudo -n umount "$path" 2>/dev/null; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n umount "$path" 2>/dev/null; then
         echo "  Unmounted: $path"
         return
     fi
 
     die "Could not unmount $path without prompting. Close any windows or terminals using the SD card, then unmount it manually."
-}
-
-get_current_hostname() {
-    local h
-    h=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'unknown')
-    h=${h%%.*}
-    h=${h//[[:space:]]/}
-    [[ -n "$h" ]] || h="unknown"
-    printf '%s\n' "$h"
 }
 
 get_current_user() {
@@ -132,71 +104,68 @@ get_current_user() {
 }
 
 usage() {
-    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
 }
 
-# ── arguments ────────────────────────────────────────────────────────────────
-
 CURRENT_USER=$(get_current_user)
-DEFAULT_SRC="/media/${CURRENT_USER}/DATA"
+DEFAULT_ROOT="/media/${CURRENT_USER}/rootfs"
 DEFAULT_DEST="/media/${CURRENT_USER}/T7 Shield"
 
 if [[ $# -eq 0 ]]; then
-    SRC="$DEFAULT_SRC"
+    ROOT_SRC="$DEFAULT_ROOT"
     DEST="$DEFAULT_DEST"
 elif [[ $# -eq 2 ]]; then
-    SRC="$1"
+    ROOT_SRC="$1"
     DEST="$2"
 else
     usage
 fi
 
-SRC="${SRC%/}"   # strip trailing slash
+ROOT_SRC="${ROOT_SRC%/}"
 DEST="${DEST%/}"
 
-[[ -d "$SRC" ]]  || die "Source path does not exist: $SRC"
+[[ "$OSTYPE" != darwin* ]] || die "This rootfs transfer workflow requires Linux ext4 support."
+[[ "$ROOT_SRC" != "/" ]] || die "Refusing to use / as the mounted SD rootfs path."
+[[ -d "$ROOT_SRC" ]] || die "Mounted rootfs path does not exist: $ROOT_SRC"
 [[ -d "$DEST" ]] || die "Destination path does not exist: $DEST"
 
-if [[ "$OSTYPE" != darwin* ]] && ! path_is_mountpoint "$SRC"; then
-    die "Source path exists but is not a mounted filesystem: $SRC. Reinsert/eject the SD card and make sure the DATA partition is mounted."
+case "$ROOT_SRC" in
+    */home/pi/data)
+        die "Pass the mounted rootfs path, not the data directory. Example: /media/user/rootfs"
+        ;;
+esac
+
+if ! path_is_mountpoint "$ROOT_SRC"; then
+    die "Source path exists but is not a mounted filesystem: $ROOT_SRC. Mount the SD card rootfs partition and pass that mount point."
 fi
 
-SRC_DEVICE=$(get_mount_source "$SRC" 2>/dev/null || true)
+DATA_SRC="${ROOT_SRC}/home/pi/data"
+[[ -d "$DATA_SRC" ]] || die "Mounted rootfs does not contain BeeCam data directory: $DATA_SRC"
 
-# ── dependency checks ─────────────────────────────────────────────────────────
+ROOT_DEVICE=$(get_mount_source "$ROOT_SRC" 2>/dev/null || true)
 
 for cmd in zip unzip; do
-    command -v "$cmd" &>/dev/null || die "'$cmd' is required but not found."
+    command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' is required but not found."
 done
 
 HAS_PV=false
-if command -v pv &>/dev/null; then
+if command -v pv >/dev/null 2>&1; then
     HAS_PV=true
 else
-    echo "Note: 'pv' not found — no progress bars (apt install pv / brew install pv)."
+    echo "Note: 'pv' not found - no progress bars (apt install pv)."
 fi
 
-# ── read camera hostname ──────────────────────────────────────────────────────
-
-CURRENT_HOSTNAME=$(get_current_hostname)
-
-if [[ -s "$SRC/hostname" ]]; then
-    CAM_HOSTNAME=$(tr -d '[:space:]' < "$SRC/hostname")
+if [[ -s "$DATA_SRC/hostname" ]]; then
+    CAM_HOSTNAME=$(tr -d '[:space:]' < "$DATA_SRC/hostname")
 else
-    CAM_HOSTNAME="$CURRENT_HOSTNAME"
-    if printf '%s\n' "$CAM_HOSTNAME" > "$SRC/hostname"; then
-        echo "Wrote current hostname to $SRC/hostname."
-    else
-        echo "Warning: could not write $SRC/hostname; archive will use current hostname in its filename."
-    fi
+    CAM_HOSTNAME="unknown"
+    echo "Warning: $DATA_SRC/hostname not found; archive will use 'unknown' in its filename."
 fi
 
 echo "Camera: $CAM_HOSTNAME"
 
-# ── determine zip filename from date range in images_and_labels ───────────────
-
-IMAGES_DIR="$SRC/images_and_labels"
+IMAGES_DIR="$DATA_SRC/images_and_labels"
 DATE_DIRS=()
 
 if [[ -d "$IMAGES_DIR" ]]; then
@@ -213,7 +182,7 @@ fi
 DATE_COUNT=${#DATE_DIRS[@]}
 TODAY=$(date '+%Y-%m-%d')
 
-if   [[ $DATE_COUNT -eq 0 ]]; then
+if [[ $DATE_COUNT -eq 0 ]]; then
     DATE_SUFFIX="${TODAY}_noimages"
 elif [[ $DATE_COUNT -eq 1 ]]; then
     DATE_SUFFIX="${DATE_DIRS[0]}"
@@ -225,9 +194,9 @@ fi
 ZIP_NAME="${CAM_HOSTNAME}_${DATE_SUFFIX}.zip"
 DEST_ZIP="$DEST/$ZIP_NAME"
 
+echo "Rootfs:   $ROOT_SRC"
+echo "Data:     $DATA_SRC"
 echo "Archive:  $DEST_ZIP"
-
-# ── check for conflicts ───────────────────────────────────────────────────────
 
 if [[ -f "$DEST_ZIP" ]]; then
     read -r -p "File already exists at destination. Overwrite? [y/N] " ow
@@ -237,50 +206,40 @@ if [[ -f "$DEST_ZIP" ]]; then
     esac
 fi
 
-# ── collect source data to include ────────────────────────────────────────────
-
 INCLUDE=()
 for item in images_and_labels logs configs hostname update_backups; do
-    if [[ -e "$SRC/$item" ]]; then
+    if [[ -e "$DATA_SRC/$item" ]]; then
         INCLUDE+=("$item")
     else
-        echo "Warning: $SRC/$item not found; skipping."
+        echo "Warning: $DATA_SRC/$item not found; skipping."
     fi
 done
 
-[[ ${#INCLUDE[@]} -gt 0 ]] || die "No source data found in $SRC"
+[[ ${#INCLUDE[@]} -gt 0 ]] || die "No BeeCam data found in $DATA_SRC"
 
 echo "Including: ${INCLUDE[*]}"
 
 echo ""
 echo "Disk usage before transfer:"
-print_disk_usage "SD card DATA" "$SRC"
+print_disk_usage "SD card rootfs" "$ROOT_SRC"
 
-# ── advisory space check ──────────────────────────────────────────────────────
-
-if [[ "$OSTYPE" == darwin* ]]; then
-    SRC_KB=$(du -sk "${INCLUDE[@]/#/$SRC/}" 2>/dev/null | awk '{s+=$1} END {print s}')
-else
-    SRC_KB=$(du -sk "${INCLUDE[@]/#/$SRC/}" 2>/dev/null | awk '{s+=$1} END {print s}')
-fi
+SRC_KB=$(du -sk "${INCLUDE[@]/#/$DATA_SRC/}" 2>/dev/null | awk '{s+=$1} END {print s}')
 DEST_KB=$(df -k "$DEST" | awk 'NR==2 {print $4}')
 
 if [[ $DEST_KB -lt $((SRC_KB / 2)) ]]; then
     echo ""
     echo "Warning: destination may not have enough free space."
-    printf  "  Source data:       %d MB\n" "$((SRC_KB  / 1024))"
-    printf  "  Destination free:  %d MB\n" "$((DEST_KB / 1024))"
+    printf "  Source data:       %d MB\n" "$((SRC_KB / 1024))"
+    printf "  Destination free:  %d MB\n" "$((DEST_KB / 1024))"
 fi
-
-# ── confirm ───────────────────────────────────────────────────────────────────
 
 echo ""
 echo "Plan:"
-echo "  1. Zip ${INCLUDE[*]} → $DEST_ZIP (store-only, no compression)"
+echo "  1. Zip ${INCLUDE[*]} -> $DEST_ZIP (store-only, no compression)"
 echo "  2. Verify zip integrity"
-echo "  3. Delete from SD:   images_and_labels/  logs/  update_backups/  .Trash-*/"
-echo "  4. Keep on SD:       configs/  hostname"
-echo "  5. Unmount SD card DATA partition"
+echo "  3. Delete from SD data dir: images_and_labels/  logs/  update_backups/  .Trash-*/"
+echo "  4. Keep in data dir:       configs/  hostname"
+echo "  5. Unmount SD card rootfs partition"
 echo ""
 read -r -p "Proceed? [y/N] " confirm
 case "$confirm" in
@@ -289,17 +248,10 @@ case "$confirm" in
 esac
 echo ""
 
-# ── zip directly to destination ───────────────────────────────────────────────
-
-cd "$SRC"
+cd "$DATA_SRC"
 
 if $HAS_PV; then
-    # Estimate uncompressed byte total for pv -s
-    if [[ "$OSTYPE" == darwin* ]]; then
-        TOTAL_BYTES=$(du -sk "${INCLUDE[@]}" 2>/dev/null | awk '{s+=$1} END {print s * 1024}')
-    else
-        TOTAL_BYTES=$(du -sb "${INCLUDE[@]}" 2>/dev/null | awk '{s+=$1} END {print s}')
-    fi
+    TOTAL_BYTES=$(du -sb "${INCLUDE[@]}" 2>/dev/null | awk '{s+=$1} END {print s}')
     echo "Zipping and transferring without compression..."
     zip -0 -r - "${INCLUDE[@]}" \
         -x "*.DS_Store" -x "__MACOSX*" \
@@ -313,76 +265,69 @@ else
 fi
 
 echo ""
-
-# ── verify ────────────────────────────────────────────────────────────────────
-
 echo "Verifying zip integrity..."
 
 if $HAS_PV; then
     ENTRY_COUNT=$(unzip -l "$DEST_ZIP" 2>/dev/null | tail -1 | awk '{print $2}')
     unzip -t "$DEST_ZIP" \
         | pv -l -s "$ENTRY_COUNT" -N "Verifying" \
-        > /dev/null \
-        || die "Zip verification failed — NOT deleting source data."
+        >/dev/null \
+        || die "Zip verification failed - NOT deleting source data."
 else
-    unzip -t "$DEST_ZIP" > /dev/null 2>&1 \
-        || die "Zip verification failed — NOT deleting source data."
+    unzip -t "$DEST_ZIP" >/dev/null 2>&1 \
+        || die "Zip verification failed - NOT deleting source data."
 fi
 
 echo "Verification passed."
 echo ""
 
-# ── delete transferred data from SD ──────────────────────────────────────────
-
-echo "Cleaning up SD card..."
-print_disk_usage "Before cleanup" "$SRC"
+echo "Cleaning up SD card data directory..."
+print_disk_usage "Before cleanup" "$ROOT_SRC"
 
 for d in images_and_labels logs; do
-    if [[ -d "$SRC/$d" ]]; then
-        rm -rf "${SRC:?}/$d"
-        mkdir -p "$SRC/$d"
+    if [[ -d "$DATA_SRC/$d" ]]; then
+        rm -rf "${DATA_SRC:?}/$d"
         echo "  Cleared: $d/"
     fi
 done
+mkdir -p "$DATA_SRC/images_and_labels" "$DATA_SRC/logs"
 
-if [[ -d "$SRC/update_backups" ]]; then
-    rm -rf "${SRC:?}/update_backups"
+if [[ -d "$DATA_SRC/update_backups" ]]; then
+    rm -rf "${DATA_SRC:?}/update_backups"
     echo "  Deleted: update_backups/"
 fi
 
 while IFS= read -r trash_dir; do
     rm -rf "$trash_dir"
     echo "  Deleted: $(basename "$trash_dir")/"
-done < <(find "$SRC" -mindepth 1 -maxdepth 1 -type d -name '.Trash-*' -print 2>/dev/null)
+done < <(find "$DATA_SRC" -mindepth 1 -maxdepth 1 -type d -name '.Trash-*' -print 2>/dev/null)
 
 for d in images_and_labels logs; do
-    if [[ -d "$SRC/$d" ]]; then
-        if ! remaining=$(find "$SRC/$d" -mindepth 1 -print -quit 2>/dev/null); then
-            die "Cleanup verification failed; could not scan $SRC/$d"
+    if [[ -d "$DATA_SRC/$d" ]]; then
+        if ! remaining=$(find "$DATA_SRC/$d" -mindepth 1 -print -quit 2>/dev/null); then
+            die "Cleanup verification failed; could not scan $DATA_SRC/$d"
         fi
-        [[ -z "$remaining" ]] || die "Cleanup verification failed; still found data under $SRC/$d"
+        [[ -z "$remaining" ]] || die "Cleanup verification failed; still found data under $DATA_SRC/$d"
     fi
 done
-[[ ! -e "$SRC/update_backups" ]] || die "Cleanup verification failed; $SRC/update_backups still exists"
-if remaining_trash=$(find "$SRC" -mindepth 1 -maxdepth 1 -type d -name '.Trash-*' -print -quit 2>/dev/null); then
+
+[[ ! -e "$DATA_SRC/update_backups" ]] || die "Cleanup verification failed; $DATA_SRC/update_backups still exists"
+if remaining_trash=$(find "$DATA_SRC" -mindepth 1 -maxdepth 1 -type d -name '.Trash-*' -print -quit 2>/dev/null); then
     [[ -z "$remaining_trash" ]] || die "Cleanup verification failed; still found $remaining_trash"
 else
     die "Cleanup verification failed; could not scan for SD card trash directories"
 fi
 
-flush_filesystem "$SRC"
-print_disk_usage "After cleanup" "$SRC"
-
-# ── summary ───────────────────────────────────────────────────────────────────
+flush_filesystem "$ROOT_SRC"
+print_disk_usage "After cleanup" "$ROOT_SRC"
 
 ZIP_MB=$(du -k "$DEST_ZIP" 2>/dev/null | awk '{printf "%.1f", $1/1024}')
 
-unmount_source "$SRC" "$SRC_DEVICE"
+unmount_source "$ROOT_SRC" "$ROOT_DEVICE"
 
 echo ""
 echo "Done."
 echo "  Archive:    $DEST_ZIP  (${ZIP_MB} MB)"
 echo "  Date range: $DATE_SUFFIX"
-echo "  Kept on SD: configs/  hostname  empty images_and_labels/  empty logs/"
-echo "  SD card:    DATA partition unmounted"
-echo "  Safe next step: remove the SD card, unless another SD-card partition is still mounted."
+echo "  Kept:       configs/  hostname  empty images_and_labels/  empty logs/"
+echo "  SD card:    rootfs partition unmounted"

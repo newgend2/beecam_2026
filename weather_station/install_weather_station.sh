@@ -4,6 +4,8 @@ trap 'echo "ERROR: install failed at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_HOME="/home/pi"
+DATA_ROOT="${PI_HOME}/data"
+DATA_CONFIG_DIR="${DATA_ROOT}/configs"
 DATA_INIT="/usr/local/sbin/weather-station-init-data.sh"
 
 log() {
@@ -24,7 +26,7 @@ require_file() {
 }
 
 install_data_initializer() {
-    log "Installing DATA partition initializer"
+    log "Installing weather station data directory initializer"
     require_file "${SCRIPT_DIR}/scripts/weather-station-init-data.sh"
     require_file "${SCRIPT_DIR}/systemd_services/weather-station-init-data.service"
 
@@ -39,7 +41,6 @@ install_apt_packages() {
     sudo apt-get update
     sudo DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        exfatprogs \
         git \
         i2c-tools \
         python3-pil \
@@ -99,13 +100,18 @@ install_weather_station_files() {
     sudo cp -a "$SCRIPT_DIR" "${PI_HOME}/weather_station"
     sudo chown -R pi:pi "${PI_HOME}/weather_station"
 
-    if mountpoint -q /data; then
-        log "Copying configs to mounted /data"
-        sudo mkdir -p /data/configs /data/weather /data/logs
-        sudo cp -a "${SCRIPT_DIR}/configs/." /data/configs/
+    log "Preparing weather station data directory"
+    sudo install -d -o pi -g pi -m 0755 \
+        "$DATA_ROOT" \
+        "${DATA_ROOT}/logs" \
+        "${DATA_ROOT}/weather"
+    if [[ ! -e "$DATA_CONFIG_DIR" ]]; then
+        log "Copying default configs to ${DATA_CONFIG_DIR}"
+        sudo install -d -o pi -g pi -m 0755 "$DATA_CONFIG_DIR"
+        sudo cp -r "${SCRIPT_DIR}/configs/." "$DATA_CONFIG_DIR/"
+        sudo chown -R pi:pi "$DATA_CONFIG_DIR"
     else
-        warn "/data is not mounted; first boot will copy configs from ${SCRIPT_DIR}/configs."
-        warn "Keep this repo at /home/pi/setup on the Pi."
+        log "Preserving existing ${DATA_CONFIG_DIR}"
     fi
 }
 

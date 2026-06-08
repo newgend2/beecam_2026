@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from astral import Observer
 from astral.sun import sun
 
-CONFIG_PATH = Path("/data/configs/schedule.conf")
+CONFIG_PATH = Path("/home/pi/data/configs/schedule.conf")
 OUT_PATH = Path("/home/pi/wittypi/schedule.wpi")
 
 

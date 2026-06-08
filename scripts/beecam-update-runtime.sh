@@ -6,7 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PI_HOME="/home/pi"
 APP_DIR="${PI_HOME}/beecam"
-DATA_CONFIG_DIR="/data/configs"
+DATA_ROOT="${PI_HOME}/data"
+DATA_CONFIG_DIR="${DATA_ROOT}/configs"
 SERVICE_FILE="/etc/systemd/system/beecam.service"
 CAPTURE_SCRIPT="beecam_capture_final.py"
 DO_GIT_PULL=false
@@ -27,10 +28,10 @@ Options:
 
 Updates only runtime files:
   - /home/pi/beecam, excluding relegated reference scripts
-  - /data/configs/camera_config_final.ini, overwritten from this repo
+  - /home/pi/data/configs/camera_config_final.ini, overwritten from this repo
   - /etc/systemd/system/beecam.service
 
-It does not install apt packages, Witty Pi, boot files, or repartition anything.
+It does not install apt packages, Witty Pi, boot files, or partition anything.
 USAGE
 }
 
@@ -97,7 +98,6 @@ fi
 require_file "${REPO_DIR}/beecam"
 require_file "${REPO_DIR}/configs/camera_config_final.ini"
 require_file "${REPO_DIR}/systemd_services/beecam.service"
-require_cmd mountpoint
 
 if $DO_GIT_PULL; then
     log "Pulling latest repo changes"
@@ -108,12 +108,8 @@ fi
 require_file "${REPO_DIR}/beecam/camera/${CAPTURE_SCRIPT}"
 require_file "${REPO_DIR}/beecam/camera/beecam_preview.py"
 
-if ! mountpoint -q /data; then
-    die "/data is not mounted. Refusing to update runtime files against the root filesystem."
-fi
-
 if [[ ! -d "$DATA_CONFIG_DIR" ]]; then
-    die "${DATA_CONFIG_DIR} does not exist on the mounted DATA partition."
+    die "${DATA_CONFIG_DIR} does not exist. Run the BeeCam installer or data initializer first."
 fi
 
 SERVICE_WAS_ACTIVE=false
@@ -126,7 +122,7 @@ if $SERVICE_WAS_ACTIVE; then
     sudo systemctl stop beecam.service
 fi
 
-BACKUP_ROOT="/data/update_backups/$(date +%Y%m%d_%H%M%S)"
+BACKUP_ROOT="${DATA_ROOT}/update_backups/$(date +%Y%m%d_%H%M%S)"
 log "Backing up current runtime files to ${BACKUP_ROOT}"
 sudo mkdir -p "$BACKUP_ROOT"
 if [[ -d "$APP_DIR" ]]; then
@@ -150,13 +146,13 @@ sudo find "${APP_DIR}/camera" -maxdepth 1 -type f -name '*.py' \
     -delete
 sudo chown -R pi:pi "$APP_DIR"
 
-log "Updating /data/configs/camera_config_final.ini"
+log "Updating ${DATA_CONFIG_DIR}/camera_config_final.ini"
 sudo mkdir -p "$DATA_CONFIG_DIR"
 sudo install -m 0644 "${REPO_DIR}/configs/camera_config_final.ini" "${DATA_CONFIG_DIR}/camera_config_final.ini"
 
 log "Updating beecam.service"
 tmp_service="$(mktemp)"
-sed "s#ExecStart=.*#ExecStart=/usr/bin/python3 /home/pi/beecam/camera/${CAPTURE_SCRIPT} --config /data/configs/camera_config_final.ini#" \
+sed "s#ExecStart=.*#ExecStart=/usr/bin/python3 /home/pi/beecam/camera/${CAPTURE_SCRIPT} --config ${DATA_CONFIG_DIR}/camera_config_final.ini#" \
     "${REPO_DIR}/systemd_services/beecam.service" > "$tmp_service"
 sudo install -m 0644 "$tmp_service" "$SERVICE_FILE"
 rm -f "$tmp_service"

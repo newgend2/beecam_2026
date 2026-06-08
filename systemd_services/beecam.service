@@ -23,7 +23,7 @@ Group=pi
 WorkingDirectory=/home/pi/beecam/camera
 
 # Main command that starts the capture script.
-ExecStart=/usr/bin/python3 /home/pi/beecam/camera/beecam_capture_final.py --config /data/configs/camera_config_final.ini
+ExecStart=/usr/bin/python3 /home/pi/beecam/camera/beecam_capture_final.py --config /home/pi/data/configs/camera_config_final.ini
 
 # Restart the service if the script exits unexpectedly or crashes.
 # It will NOT restart after an intentional:

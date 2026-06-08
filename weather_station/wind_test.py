@@ -16,7 +16,7 @@ def print_event(event_type: str, message: str, exc: BaseException | None = None)
 
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Read the weather station wind ADC directly.")
-    parser.add_argument("--config", default="/data/configs/weather_station_config.ini")
+    parser.add_argument("--config", default="/home/pi/data/configs/weather_station_config.ini")
     parser.add_argument("--count", type=int, default=20)
     parser.add_argument("--interval", type=float, default=1.0)
     return parser.parse_args()

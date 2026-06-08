@@ -1,5 +1,5 @@
 [Unit]
-Description=Initialize Weather Station DATA partition
+Description=Initialize Weather Station rootfs data directory
 After=local-fs.target
 Before=weather-station.service
 

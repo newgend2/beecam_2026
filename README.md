@@ -2,8 +2,14 @@
 
 This is a scripted provisioning repo, not a pure golden-image workflow. Start
 from a fresh Raspberry Pi OS card, clone this repo, and run the installer on the
-Pi. Then shut down, move the card to a Linux PC/laptop, and run the partitioning
-script from this repo.
+Pi. BeeCam stores configs, captures, logs, host metadata, and update backups on
+the root filesystem under:
+
+```bash
+/home/pi/data
+```
+
+There is no separate removable data partition in the current fresh-card workflow.
 
 ## Quick Start
 
@@ -21,14 +27,14 @@ cd ~/setup && git pull && chmod +x beecam_install.sh scripts/beecam-init-data.sh
 
 The installer:
 
-- installs the DATA partition initializer
+- installs the BeeCam data directory initializer
+- creates `/home/pi/data/configs`, `/home/pi/data/logs`, and `/home/pi/data/images_and_labels`
+- seeds configs from this repo only when `/home/pi/data/configs` does not already exist
 - installs apt packages without running a full OS upgrade by default
 - installs `astral` and `adafruit-circuitpython-ssd1306` into system Python with `--break-system-packages`
 - installs Witty Pi software
 - replaces Witty Pi scripts with the repo versions
 - copies BeeCam code into `/home/pi/beecam`
-- uses this repo's `configs/` folder as the first-boot default config source
-- copies configs into `/data/configs` when `/data` already exists
 - updates `/boot/firmware/cmdline.txt`
 - replaces `/boot/firmware/config.txt`
 - installs systemd services
@@ -46,31 +52,19 @@ For a slower full OS refresh, run the installer with:
 Use `--skip-apt-update` only when `sudo apt update` was already run immediately
 before the installer.
 
-## PC/Laptop Partitioning
+## Data Transfer
 
-A booted Pi cannot safely shrink its own mounted root filesystem, so partitioning
-is done from a Linux PC/laptop after the Pi-side install.
+To transfer data, shut the Pi down cleanly, insert the SD card into a Linux
+PC/laptop, mount the SD card root filesystem, and run:
 
-1. Shut down the Pi cleanly:
+```bash
+./transfer_beecam.sh /media/user/rootfs /media/user/BackupSSD
+```
 
-   ```bash
-   sudo shutdown now
-   ```
-
-2. Insert the SD card into a Linux PC/laptop.
-
-3. From this repo on the PC/laptop, run:
-
-   ```bash
-   ./partition_beecam_sd_on_pc.sh
-   ```
-
-The PC/laptop script shrinks root to 10GiB, creates the exFAT DATA partition,
-updates the target card's `/etc/fstab`, and copies `configs/` to
-`/data/configs`.
-
-Keep `/home/pi/setup` on the Pi. The DATA initializer can use that repo copy as
-a fallback source for default configs if `/data/configs` does not already exist.
+The transfer script expects the mounted rootfs path, not `/home/pi/data`
+directly. It archives `/home/pi/data` contents with store-only zip, verifies the
+archive with `unzip -t`, cleans transferred capture/log/update data from
+`/home/pi/data`, flushes writes, and unmounts the rootfs partition.
 
 ## Services
 
@@ -88,10 +82,11 @@ capture script, preview script, service file, and camera config with:
 ssh pi@cam7 'cd ~/setup && git pull --ff-only && chmod +x scripts/beecam-update-runtime.sh && scripts/beecam-update-runtime.sh --restart'
 ```
 
-The updater backs up the current runtime files under `/data/update_backups/`
-before replacing them. It deploys only the production camera Python scripts
-(`beecam_capture_final.py` and `beecam_preview.py`) to `/home/pi/beecam/camera`,
-and overwrites `/data/configs/camera_config_final.ini`.
+The updater backs up the current runtime files under
+`/home/pi/data/update_backups/` before replacing them. It deploys only the
+production camera Python scripts (`beecam_capture_final.py` and
+`beecam_preview.py`) to `/home/pi/beecam/camera`, and overwrites
+`/home/pi/data/configs/camera_config_final.ini`.
 
 ## Troubleshooting
 

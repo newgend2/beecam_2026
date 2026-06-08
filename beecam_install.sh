@@ -4,6 +4,8 @@ trap 'echo "ERROR: install failed at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_HOME="/home/pi"
+DATA_ROOT="${PI_HOME}/data"
+DATA_CONFIG_DIR="${DATA_ROOT}/configs"
 DATA_INIT="/usr/local/sbin/beecam-init-data.sh"
 VIDEO_ARG="video=HDMI-A-1:800x480@60D"
 RUN_APT_UPDATE="${BEECAM_APT_UPDATE:-1}"
@@ -74,7 +76,7 @@ parse_args() {
 }
 
 install_data_initializer() {
-    log "Installing DATA partition initializer"
+    log "Installing BeeCam data directory initializer"
     require_file "${SCRIPT_DIR}/scripts/beecam-init-data.sh"
     require_file "${SCRIPT_DIR}/systemd_services/beecam-init-data.service"
 
@@ -162,13 +164,18 @@ install_beecam_files() {
         -delete
     sudo chown -R pi:pi "${PI_HOME}/beecam"
 
-    if mountpoint -q /data; then
-        log "Copying configs to mounted /data"
-        sudo mkdir -p /data/configs
-        sudo cp -a "${SCRIPT_DIR}/configs/." /data/configs/
+    log "Preparing BeeCam data directory"
+    sudo install -d -o pi -g pi -m 0755 \
+        "$DATA_ROOT" \
+        "${DATA_ROOT}/logs" \
+        "${DATA_ROOT}/images_and_labels"
+    if [[ ! -e "$DATA_CONFIG_DIR" ]]; then
+        log "Copying default configs to ${DATA_CONFIG_DIR}"
+        sudo install -d -o pi -g pi -m 0755 "$DATA_CONFIG_DIR"
+        sudo cp -r "${SCRIPT_DIR}/configs/." "$DATA_CONFIG_DIR/"
+        sudo chown -R pi:pi "$DATA_CONFIG_DIR"
     else
-        warn "/data is not mounted; first boot will copy configs from ${SCRIPT_DIR}/configs."
-        warn "Keep this repo at /home/pi/setup on the Pi."
+        log "Preserving existing ${DATA_CONFIG_DIR}"
     fi
 }
 
