@@ -41,19 +41,25 @@ Important preserved behavior:
   unless that is an intentional design change. They were removed because they
   could retrigger captures for persistent static objects and because model
   confidence was too variable.
-- Model-triggered captures save the full-resolution main buffer from the same
-  completed request whose metadata produced the detection. Do not move normal
-  model capture back to `switch_mode_and_capture_file`; that can separate the
-  saved still from the detection timing. Timelapse mode can still use its
-  still-only `capture_file` path.
-- Detection and stale matching use preview/lores coordinates. Saved labels are
-  scaled from preview/lores coordinates to the full still image.
+- The old default where model-triggered captures saved the full-resolution main
+  buffer from the same completed request was intentionally superseded after
+  field power measurements. Production capture now defaults to low-resolution
+  scanning with a short high-resolution still burst on new detection tracks.
+  Keep `camera.capture_strategy = same_request` only as an explicit fallback.
+- Production capture intentionally saves JPEG images only. Do not reintroduce
+  label `.txt` output or preview-to-still label coordinate conversion unless
+  that is a deliberate labeling workflow change.
+- Detection and stale matching use low-resolution tracking coordinates. In the
+  same-request fallback, detections are still mapped to the lores stream.
 - Normal `journalctl -u beecam.service` output is intentionally quiet by
   default and should show image-save messages during ordinary capture. Stale
   suppression logs, FPS counters/logs, queue timing logs, and startup/config/ROI
   logs are opt-in through `[debug]`.
 - FPS bookkeeping should stay disabled unless `debug.fps_log_interval_sec > 0`
   so normal capture avoids unnecessary per-frame accounting.
+- Default capture retriggering is one burst per newly created detection track;
+  do not restore repeated captures for the same persistent track unless the
+  field power/storage tradeoff is being changed deliberately.
 - Normal model-detection OLED state should be either `SCANNING` or `DETECTION`;
   the old `SAVED` state/overlay path was intentionally removed. Lifecycle and
   error states such as `INIT`, `FULL`, `STOPPING`, and `RESTART` are still
@@ -88,13 +94,13 @@ Source chats: [nms_fix.md](nms_fix.md), [transfer_and_update_script.md](transfer
 
 Protected files:
 
-- [offline_update](../../offline_update)
+- [offline_update.sh](../../offline_update.sh)
 - [scripts/beecam-update-runtime.sh](../../scripts/beecam-update-runtime.sh)
 - [beecam_install.sh](../../beecam_install.sh)
 
 Important preserved behavior:
 
-- `offline_update` is a laptop-side field updater. It normalizes camera host
+- `offline_update.sh` is a laptop-side field updater. It normalizes camera host
   names like `cam17`, `cam17.local`, or `pi@cam17.local`, rsyncs the local repo
   to `/home/pi/setup`, and runs the camera-side runtime updater over SSH.
 - Hyphenated hostnames such as `cam-1` and `cam-2` are expected to work.
@@ -102,8 +108,8 @@ Important preserved behavior:
   parsing requirements.
 - The offline update path should not require internet on the camera. The field
   laptop repo is the source of truth for `/home/pi/setup`.
-- `offline_update` preflights that remote `/home/pi/data/configs` exists before
-  running the runtime update.
+- `offline_update.sh` preflights that the remote rootfs data layout exists under
+  `/home/pi/data` before running the runtime update.
 - `scripts/beecam-update-runtime.sh` backs up runtime files to
   `/home/pi/data/update_backups/...` using normal `cp`/`cp -r` copies.
 - The runtime updater overwrites only
@@ -143,8 +149,10 @@ Important preserved behavior:
 - The script unmounts the rootfs partition it used. If a desktop also mounted
   another card partition such as `boot`, the technician may still need to eject
   that from the file manager.
-- A display showing `0 pictures` but non-trivial `SD %` now reflects rootfs
-  usage, including OS files, hidden trash, and filesystem metadata.
+- BeeCam's OLED `SD %` display reflects `/home/pi/data` recursive size divided
+  by the SD card/rootfs capacity, so empty BeeCam data should read near `0%`.
+  A separate internal rootfs-full guard still stops capture if non-BeeCam data
+  fills the filesystem.
 - `transfer_beecam.sh` names archives from `/home/pi/data/hostname` when
   present. After renaming a Pi, let the camera app boot once so it rewrites the
   hostname marker, or manually update/delete that file before transferring.
@@ -166,7 +174,9 @@ Important preserved behavior:
   the `feature/no-exfat-data` migration. Current BeeCam storage is rooted at
   `/home/pi/data` on the root filesystem.
 - BeeCam startup, runtime update, and capture code should use
-  `/home/pi/data`, and storage fullness checks should measure that rootfs.
+  `/home/pi/data`. Displayed storage fullness should measure BeeCam data size
+  under that directory against the card/rootfs capacity, while retaining a
+  non-displayed rootfs-full safety guard.
 - BeeCam uses a short `beecam-oled-boot.service` oneshot for early OLED boot
   visibility. It reads `/home/pi/data/configs/camera_config_final.ini`, exits
   immediately when `[oled] enabled = false`, and should not introduce a
@@ -198,6 +208,9 @@ Important preserved behavior:
 - Weather station uses the same rootfs data-directory pattern as BeeCam: Witty
   Pi scheduling/power cycling, `/home/pi/data` storage,
   `/home/pi/data/logs`, linked logs, systemd services, and exception logging.
+- BeeCam and weather-station time initialization should keep NTP primary when
+  Ethernet is connected, but skip the NTP wait quickly when no wired Ethernet
+  carrier is detected.
 - `weather-station-init-data.sh` creates `/home/pi/data/logs` and
   `/home/pi/data/weather`, and seeds configs only when
   `/home/pi/data/configs` does not already exist.

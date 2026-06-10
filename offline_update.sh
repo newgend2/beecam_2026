@@ -5,6 +5,7 @@ trap 'echo "ERROR: offline update failed at line ${LINENO}: ${BASH_COMMAND}" >&2
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REMOTE_USER="pi"
 REMOTE_SETUP="/home/pi/setup"
+REMOTE_DATA_ROOT="/home/pi/data"
 
 die() {
     echo "Error: $*" >&2
@@ -28,7 +29,7 @@ need_cmd rsync
 need_cmd ssh
 
 if [[ $# -gt 1 ]]; then
-    die "Usage: ./offline_update [camera-hostname]"
+    die "Usage: ./offline_update.sh [camera-hostname]"
 fi
 
 if [[ $# -eq 1 ]]; then
@@ -52,9 +53,9 @@ case "$confirm" in
 esac
 
 echo
-echo "==> Checking camera data directory"
-if ! ssh "$REMOTE" 'test -d /home/pi/data/configs'; then
-    die "Remote /home/pi/data/configs is missing on ${REMOTE}."
+echo "==> Checking camera rootfs data directories"
+if ! ssh "$REMOTE" 'test -d /home/pi/data && test -w /home/pi/data && test -d /home/pi/data/configs && test -d /home/pi/data/images_and_labels && test -d /home/pi/data/logs'; then
+    die "Remote ${REMOTE_DATA_ROOT} is missing required BeeCam folders on ${REMOTE}. Run the BeeCam installer or data initializer first."
 fi
 
 echo

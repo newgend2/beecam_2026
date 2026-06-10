@@ -27,17 +27,20 @@ This repo supports the Beecam 2026 Raspberry Pi setup, including SD card prep, i
 - Before editing capture, preview, Witty Pi schedule, offline update, transfer, install, or data-directory init logic, check the protected-fix summary in `references/chat_history/README.md`.
 - Do not accidentally remove these protected behaviors:
   - class-aware NMS in the non-Nanodet YOLO path before stale detection;
-  - model captures saving the main buffer from the same completed preview/lores request;
+  - production model capture defaulting to low-res scan plus high-res still burst, with `same_request` kept only as an explicit fallback;
+  - production capture saving images only, with no label `.txt` output;
   - stale detection without periodic refresh captures or confidence-jump reactivation;
   - Witty Pi `WAIT` states skipping externally managed schedule endpoints;
   - BeeCam and weather-station runtime storage rooted at `/home/pi/data`;
-  - `offline_update` working over SSH/rsync without camera-side internet;
+  - `offline_update.sh` working over SSH/rsync without camera-side internet;
   - transfer archives using store-only zip with `unzip -t` verification before deletion;
   - transfer cleanup of `images_and_labels/`, `logs/`, `update_backups/`, and `.Trash-*`, followed by sync and rootfs unmount;
   - BeeCam install keeping `apt-get full-upgrade` opt-in, not default;
   - first-boot config seeding that does not overwrite existing `/home/pi/data/configs`.
   - quiet BeeCam journal defaults: normal image-save messages by default, with stale/FPS/queue/startup logs opt-in under `[debug]`;
   - production capture OLED model states limited to `SCANNING` and `DETECTION`, with no old `SAVED` overlay/state path.
+  - BeeCam displayed `SD` percent measuring `/home/pi/data` size against card capacity, plus an internal rootfs-full guard;
+  - BeeCam and weather-station NTP waits skipping quickly when no wired Ethernet link is detected.
 - The older separate-partition guardrails were intentionally superseded by the rootfs data-directory migration.
 - If a requested change conflicts with a protected behavior, call that out before editing.
 

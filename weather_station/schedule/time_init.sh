@@ -32,6 +32,16 @@ wait_for_ntp_sync() {
     return 1
 }
 
+wired_link_up() {
+    local carrier
+    for carrier in /sys/class/net/eth*/carrier /sys/class/net/en*/carrier; do
+        if [ -r "$carrier" ] && [ "$(cat "$carrier" 2>/dev/null || echo 0)" = "1" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 log "Starting time initialization"
 
 # Set timezone for the system clock display/interpretation.
@@ -53,7 +63,9 @@ system_to_rtc
 log "Enabling NTP"
 sudo timedatectl set-ntp true
 
-if wait_for_ntp_sync; then
+if ! wired_link_up; then
+    log "No wired Ethernet link detected; skipping NTP wait and keeping RTC-derived time"
+elif wait_for_ntp_sync; then
     log "NTP synchronized successfully"
 
     # Push corrected system time back to all other clocks

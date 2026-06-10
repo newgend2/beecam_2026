@@ -13,7 +13,6 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from functools import lru_cache
 
 from libcamera import controls
 from picamera2 import Picamera2
@@ -44,7 +43,8 @@ save_stop_event = None
 CAPTURE_STREAM = "main"
 # IMX500 inference runs on the sensor's input tensor/ROI. This stream is the
 # Picamera2 output used for preview/debug coordinates, not the model input.
-DETECTION_STREAM = "lores"
+LOW_RES_DETECTION_STREAM = "main"
+SAME_REQUEST_DETECTION_STREAM = "lores"
 
 capture_in_progress = False
 last_capture_time = 0.0
@@ -78,6 +78,8 @@ class AppConfig:
     async_save_queue_size: int
     fps: int
     capture_cooldown_sec: float
+    capture_strategy: str
+    burst_count: int
 
     threshold: float
     iou: float
@@ -128,6 +130,7 @@ class AppConfig:
 class SharedStatus:
     state: str = "BOOT"
     disk_used_percent: float = 0.0
+    rootfs_used_percent: float = 0.0
     image_count_today: int = 0
     schedule_message: str | None = None
     startup_short: str = "--:--"
@@ -147,8 +150,7 @@ save_stats_lock = threading.Lock()
 class SaveJob:
     stem: str
     image_path: str
-    label_path: str
-    detections: list | None
+    detection_count: int
     request: object
     queued_monotonic: float | None
     queued_wall: str | None
@@ -165,6 +167,7 @@ class StaleTrack:
     last_seen: float
     last_capture: float
     suppressed_count: int = 0
+    capture_triggered: bool = False
 
 
 def log_exception_event(event_type: str, message: str, exc: BaseException | None = None):
@@ -243,6 +246,8 @@ def read_config(config_path: str) -> AppConfig:
         async_save_queue_size=getint("camera", "async_save_queue_size", fallback=2),
         fps=getint("camera", "fps", fallback=10),
         capture_cooldown_sec=getfloat("camera", "capture_cooldown_sec", fallback=0.1),
+        capture_strategy=get("camera", "capture_strategy", fallback="switch_burst").strip().lower(),
+        burst_count=max(1, getint("camera", "burst_count", fallback=2)),
 
         threshold=getfloat("model", "threshold", fallback=0.30),
         iou=getfloat("model", "iou", fallback=0.65),
@@ -292,6 +297,13 @@ def read_config(config_path: str) -> AppConfig:
 
 def format_exception_name_and_message(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
+
+
+def validate_config():
+    if cfg.capture_strategy not in {"switch_burst", "same_request"}:
+        raise ValueError(
+            "camera.capture_strategy must be 'switch_burst' or 'same_request'"
+        )
 
 
 def cleanup_camera():
@@ -355,14 +367,12 @@ def ae_exposure_mode_from_string(name: str):
     return mapping[name]
 
 
-def dated_dirs(save_root: str):
+def dated_images_dir(save_root: str):
     day = datetime.now().strftime("%Y-%m-%d")
     base = os.path.join(save_root, day)
     images_dir = os.path.join(base, "images")
-    labels_dir = os.path.join(base, "labels")
     os.makedirs(images_dir, exist_ok=True)
-    os.makedirs(labels_dir, exist_ok=True)
-    return images_dir, labels_dir
+    return images_dir
 
 
 def make_stem() -> str:
@@ -385,11 +395,69 @@ def count_today_images(save_root: str) -> int:
         return 0
 
 
-def get_disk_used_percent(path: str) -> float:
-    total, used, _free = shutil.disk_usage(path)
+def existing_path_for_usage(path: str) -> str:
+    current = os.path.abspath(path)
+    while not os.path.exists(current):
+        parent = os.path.dirname(current)
+        if parent == current:
+            return os.path.abspath(os.sep)
+        current = parent
+    return current
+
+
+def get_recursive_size_bytes(path: str) -> int:
+    total = 0
+    if not os.path.exists(path):
+        return 0
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                try:
+                    stat = entry.stat(follow_symlinks=False)
+                    total += stat.st_size
+                    if entry.is_dir(follow_symlinks=False):
+                        total += get_recursive_size_bytes(entry.path)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    continue
+    except OSError:
+        return total
+    return total
+
+
+@dataclass
+class StorageUsage:
+    data_used_percent: float
+    rootfs_used_percent: float
+
+
+def get_storage_usage(path: str) -> StorageUsage:
+    usage_path = existing_path_for_usage(path)
+    total, used, _free = shutil.disk_usage(usage_path)
     if total <= 0:
-        return 100.0
-    return (used / total) * 100.0
+        return StorageUsage(data_used_percent=100.0, rootfs_used_percent=100.0)
+    data_used = get_recursive_size_bytes(path)
+    return StorageUsage(
+        data_used_percent=(data_used / total) * 100.0,
+        rootfs_used_percent=(used / total) * 100.0,
+    )
+
+
+def storage_usage_exceeds_threshold(usage: StorageUsage) -> bool:
+    return (
+        usage.data_used_percent >= cfg.storage_stop_percent
+        or usage.rootfs_used_percent >= cfg.storage_stop_percent
+    )
+
+
+def storage_locked_or_full() -> bool:
+    with status_lock:
+        return (
+            status.storage_locked
+            or status.disk_used_percent >= cfg.storage_stop_percent
+            or status.rootfs_used_percent >= cfg.storage_stop_percent
+        )
 
 
 def write_hostname_marker():
@@ -559,10 +627,11 @@ class StorageMonitor(threading.Thread):
     def run(self):
         while not self.stop_event.is_set():
             try:
-                pct = get_disk_used_percent(cfg.storage_check_path)
+                usage = get_storage_usage(cfg.storage_check_path)
                 with status_lock:
-                    status.disk_used_percent = pct
-                    if pct >= cfg.storage_stop_percent:
+                    status.disk_used_percent = usage.data_used_percent
+                    status.rootfs_used_percent = usage.rootfs_used_percent
+                    if storage_usage_exceeds_threshold(usage):
                         status.stop_due_to_storage = True
                         status.storage_locked = True
                         status.state = "FULL"
@@ -579,14 +648,23 @@ class Detection:
         self.category = int(category)
         self.conf = float(conf)
         try:
-            self.box = imx500.convert_inference_coords(coords, metadata, picam2, stream=DETECTION_STREAM)
+            self.box = imx500.convert_inference_coords(coords, metadata, picam2, stream=get_detection_stream())
         except TypeError as e:
             if "stream" not in str(e):
                 raise
             # Older Picamera2 releases only convert to the main stream. In the
-            # current pipeline, main is full-res, so convert back to
-            # preview/lores coordinates.
-            self.box = scale_box_still_to_preview(*imx500.convert_inference_coords(coords, metadata, picam2))
+            # same-request fallback, main is full-res, so convert back to
+            # preview/lores tracking coordinates.
+            box = imx500.convert_inference_coords(coords, metadata, picam2)
+            if cfg.capture_strategy == "same_request":
+                box = scale_box_still_to_preview(*box)
+            self.box = box
+
+
+def get_detection_stream() -> str:
+    if cfg is not None and cfg.capture_strategy == "same_request":
+        return SAME_REQUEST_DETECTION_STREAM
+    return LOW_RES_DETECTION_STREAM
 
 
 def parse_detections(metadata: dict):
@@ -840,6 +918,7 @@ def filter_stale_detections(detections):
             track = create_stale_track(detection, now_mono)
             matched_track_ids.add(track.id)
             fresh.append(detection)
+            track.capture_triggered = True
             continue
 
         matched_track_ids.add(track.id)
@@ -853,14 +932,18 @@ def filter_stale_detections(detections):
         if size_change:
             track.first_seen = now_mono
             track.last_capture = now_mono
-            fresh.append(detection)
+            if not track.capture_triggered:
+                fresh.append(detection)
+                track.capture_triggered = True
         elif stale_age >= cfg.stale_detection_sec:
             suppressed.append(detection)
             track.suppressed_count += 1
             stale_suppressed_total += 1
         else:
             track.last_capture = now_mono
-            fresh.append(detection)
+            if not track.capture_triggered:
+                fresh.append(detection)
+                track.capture_triggered = True
 
         update_track_from_detection(track, detection, now_mono)
 
@@ -881,30 +964,6 @@ def filter_stale_detections(detections):
     return fresh, suppressed
 
 
-@lru_cache
-def get_labels():
-    labels = intrinsics.labels
-    if intrinsics.ignore_dash_labels:
-        labels = [label for label in labels if label and label != "-"]
-    return labels
-
-
-def scale_box_preview_to_still(x, y, w, h):
-    sx = cfg.still_width / cfg.preview_width
-    sy = cfg.still_height / cfg.preview_height
-
-    x2 = float(x * sx)
-    y2 = float(y * sy)
-    w2 = float(w * sx)
-    h2 = float(h * sy)
-
-    x2 = max(0.0, min(float(cfg.still_width), x2))
-    y2 = max(0.0, min(float(cfg.still_height), y2))
-    w2 = max(1.0, min(float(cfg.still_width) - x2, w2))
-    h2 = max(1.0, min(float(cfg.still_height) - y2, h2))
-    return x2, y2, w2, h2
-
-
 def scale_box_still_to_preview(x, y, w, h):
     sx = cfg.preview_width / cfg.still_width
     sy = cfg.preview_height / cfg.still_height
@@ -919,27 +978,6 @@ def scale_box_still_to_preview(x, y, w, h):
     w2 = max(1.0, min(float(cfg.preview_width) - x2, w2))
     h2 = max(1.0, min(float(cfg.preview_height) - y2, h2))
     return x2, y2, w2, h2
-
-
-def write_label_txt(label_path: str, detections):
-    # YOLO format: class_id x_center y_center width height confidence
-    # Detection boxes are in preview/lores coordinates; labels are normalized
-    # to the saved main-stream resolution with confidence in [0, 1].
-    with open(label_path, "w", encoding="utf-8") as f:
-        for d in detections:
-            x, y, w, h = d.box
-            x2, y2, w2, h2 = scale_box_preview_to_still(x, y, w, h)
-            xc = (x2 + (w2 / 2.0)) / float(cfg.still_width)
-            yc = (y2 + (h2 / 2.0)) / float(cfg.still_height)
-            wn = w2 / float(cfg.still_width)
-            hn = h2 / float(cfg.still_height)
-
-            xc = max(0.0, min(1.0, xc))
-            yc = max(0.0, min(1.0, yc))
-            wn = max(0.0, min(1.0, wn))
-            hn = max(0.0, min(1.0, hn))
-
-            f.write(f"{d.category} {xc:.6f} {yc:.6f} {wn:.6f} {hn:.6f} {d.conf:.6f}\n")
 
 
 def _record_async_save(success: bool):
@@ -994,21 +1032,18 @@ class AsyncSaveWorker(threading.Thread):
             success = False
             try:
                 job.request.save(CAPTURE_STREAM, job.image_path)
-                if job.detections is not None:
-                    write_label_txt(job.label_path, job.detections)
 
-                detection_count = len(job.detections) if job.detections is not None else 0
                 if cfg.log_capture_queue and job.queued_monotonic is not None:
                     save_delay_ms = (time.monotonic() - job.queued_monotonic) * 1000.0
                     frame_age_text = f" frame_age_ms={job.frame_age_ms:.1f}" if job.frame_age_ms is not None else ""
                     print(
-                        f"Capture saved: {job.image_path} detections={detection_count} "
+                        f"Capture saved: {job.image_path} detections={job.detection_count} "
                         f"queued_at={job.queued_wall} saved_at={format_wall_time_with_ms()} "
                         f"save_delay_ms={save_delay_ms:.1f}{frame_age_text}",
                         flush=True,
                     )
                 else:
-                    print(f"Capture saved: {job.image_path} detections={detection_count}", flush=True)
+                    print(f"Capture saved: {job.image_path} detections={job.detection_count}", flush=True)
                 update_saved_status(job.stem)
                 success = True
             except Exception as e:
@@ -1075,6 +1110,13 @@ def update_saved_status(stem: str):
             status.state = "SCANNING"
 
 
+def lock_storage_full():
+    with status_lock:
+        status.stop_due_to_storage = True
+        status.storage_locked = True
+        status.state = "FULL"
+
+
 def capture_still(stem: str, detections=None, request=None):
     global capture_in_progress, last_capture_time
 
@@ -1083,16 +1125,12 @@ def capture_still(stem: str, detections=None, request=None):
     if time.monotonic() - last_capture_time < cfg.capture_cooldown_sec:
         return False
 
-    with status_lock:
-        if status.storage_locked or status.disk_used_percent >= cfg.storage_stop_percent:
-            status.stop_due_to_storage = True
-            status.storage_locked = True
-            status.state = "FULL"
-            return False
+    if storage_locked_or_full():
+        lock_storage_full()
+        return False
 
-    images_dir, labels_dir = dated_dirs(cfg.save_root)
+    images_dir = dated_images_dir(cfg.save_root)
     image_path = os.path.join(images_dir, f"{stem}.jpg")
-    label_path = os.path.join(labels_dir, f"{stem}.txt")
 
     capture_in_progress = True
     try:
@@ -1109,8 +1147,6 @@ def capture_still(stem: str, detections=None, request=None):
         else:
             raise RuntimeError("Model captures require a completed request")
 
-        if detections is not None:
-            write_label_txt(label_path, detections)
         last_capture_time = time.monotonic()
         detection_count = len(detections) if detections is not None else 0
         print(f"Capture saved: {image_path} detections={detection_count}", flush=True)
@@ -1126,19 +1162,15 @@ def queue_capture_still(stem: str, detections, request, metadata):
     if time.monotonic() - last_capture_time < cfg.capture_cooldown_sec:
         return False
 
-    with status_lock:
-        if status.storage_locked or status.disk_used_percent >= cfg.storage_stop_percent:
-            status.stop_due_to_storage = True
-            status.storage_locked = True
-            status.state = "FULL"
-            return False
+    if storage_locked_or_full():
+        lock_storage_full()
+        return False
 
     if save_queue is None:
         raise RuntimeError("Async save worker is not running")
 
-    images_dir, labels_dir = dated_dirs(cfg.save_root)
+    images_dir = dated_images_dir(cfg.save_root)
     image_path = os.path.join(images_dir, f"{stem}.jpg")
-    label_path = os.path.join(labels_dir, f"{stem}.txt")
     queued_monotonic = None
     queued_wall = None
     frame_age_ms = None
@@ -1149,8 +1181,7 @@ def queue_capture_still(stem: str, detections, request, metadata):
     job = SaveJob(
         stem=stem,
         image_path=image_path,
-        label_path=label_path,
-        detections=list(detections) if detections is not None else None,
+        detection_count=len(detections) if detections is not None else 0,
         request=request,
         queued_monotonic=queued_monotonic,
         queued_wall=queued_wall,
@@ -1191,7 +1222,72 @@ def queue_capture_still(stem: str, detections, request, metadata):
     return True
 
 
+def capture_burst_images(detections) -> bool:
+    global capture_in_progress, last_capture_time
+
+    if capture_in_progress:
+        return False
+    if time.monotonic() - last_capture_time < cfg.capture_cooldown_sec:
+        return False
+    if storage_locked_or_full():
+        lock_storage_full()
+        return False
+
+    images_dir = dated_images_dir(cfg.save_root)
+    base_stem = make_stem()
+    detection_count = len(detections) if detections is not None else 0
+    saved_count = 0
+    switched_to_still = False
+
+    capture_in_progress = True
+    try:
+        with status_lock:
+            status.state = "DETECTION"
+
+        picam2.switch_mode(still_config)
+        switched_to_still = True
+
+        for index in range(cfg.burst_count):
+            if storage_locked_or_full():
+                lock_storage_full()
+                break
+
+            stem = f"{base_stem}_b{index + 1:02d}"
+            image_path = os.path.join(images_dir, f"{stem}.jpg")
+            request = None
+            try:
+                request = picam2.capture_request()
+                request.save(CAPTURE_STREAM, image_path)
+                saved_count += 1
+                _record_async_save(True)
+                last_capture_time = time.monotonic()
+                print(
+                    f"Capture saved: {image_path} detections={detection_count} "
+                    f"burst={index + 1}/{cfg.burst_count}",
+                    flush=True,
+                )
+                update_saved_status(stem)
+                if index + 1 < cfg.burst_count:
+                    with status_lock:
+                        if not status.storage_locked:
+                            status.state = "DETECTION"
+            finally:
+                if request is not None:
+                    request.release()
+    finally:
+        if switched_to_still:
+            picam2.switch_mode(preview_config)
+        capture_in_progress = False
+        with status_lock:
+            if not status.storage_locked and status.state == "DETECTION":
+                status.state = "SCANNING"
+
+    return saved_count > 0
+
+
 def capture_full_res_image(detections, request, metadata):
+    if cfg.capture_strategy == "switch_burst":
+        return capture_burst_images(detections)
     return queue_capture_still(make_stem(), detections=detections, request=request, metadata=metadata)
 
 
@@ -1275,18 +1371,26 @@ def build_camera_objects():
 
     preview_config = None
     if not cfg.timelapse_enabled:
-        preview_config = picam2.create_preview_configuration(
-            main={"size": (cfg.still_width, cfg.still_height), "format": "YUV420"},
-            lores={"size": (cfg.preview_width, cfg.preview_height), "format": "YUV420"},
-            controls=preview_controls,
-            buffer_count=cfg.buffer_count_preview,
-            display=DETECTION_STREAM,
-            encode=CAPTURE_STREAM,
-            queue=False,
-        )
+        if cfg.capture_strategy == "same_request":
+            preview_config = picam2.create_preview_configuration(
+                main={"size": (cfg.still_width, cfg.still_height), "format": "YUV420"},
+                lores={"size": (cfg.preview_width, cfg.preview_height), "format": "YUV420"},
+                controls=preview_controls,
+                buffer_count=cfg.buffer_count_preview,
+                display=SAME_REQUEST_DETECTION_STREAM,
+                encode=CAPTURE_STREAM,
+                queue=False,
+            )
+        else:
+            preview_config = picam2.create_preview_configuration(
+                main={"size": (cfg.preview_width, cfg.preview_height), "format": "YUV420"},
+                controls=preview_controls,
+                buffer_count=cfg.buffer_count_preview,
+                queue=False,
+            )
 
     still_config = None
-    if cfg.timelapse_enabled:
+    if cfg.timelapse_enabled or cfg.capture_strategy == "switch_burst":
         still_config = picam2.create_still_configuration(
             main={"size": (cfg.still_width, cfg.still_height), "format": "YUV420"},
             controls=still_controls,
@@ -1331,6 +1435,7 @@ def main():
 
     args = get_args()
     cfg = read_config(args.config)
+    validate_config()
 
     oled = OledDisplay(enabled=cfg.oled_enabled, log_errors=cfg.log_startup)
     _oled_show_safe(oled, [
@@ -1345,16 +1450,17 @@ def main():
 
     schedule_info = parse_schedule_wpi(cfg.schedule_wpi_path)
     initial_count = count_today_images(cfg.save_root)
-    initial_disk_pct = get_disk_used_percent(cfg.storage_check_path)
+    initial_storage_usage = get_storage_usage(cfg.storage_check_path)
 
     with status_lock:
         status.image_count_today = initial_count
-        status.disk_used_percent = initial_disk_pct
+        status.disk_used_percent = initial_storage_usage.data_used_percent
+        status.rootfs_used_percent = initial_storage_usage.rootfs_used_percent
         status.startup_short = schedule_info["startup_short"]
         status.shutdown_short = schedule_info["shutdown_short"]
         status.schedule_message = schedule_info["message"]
         status.capture_mode_label = "TIMELAPSE" if cfg.timelapse_enabled else "MODEL"
-        if initial_disk_pct >= cfg.storage_stop_percent:
+        if storage_usage_exceeds_threshold(initial_storage_usage):
             status.stop_due_to_storage = True
             status.storage_locked = True
             status.state = "FULL"
@@ -1374,7 +1480,7 @@ def main():
 
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
-    if initial_disk_pct >= cfg.storage_stop_percent:
+    if storage_usage_exceeds_threshold(initial_storage_usage):
         stay_alive_storage_locked(stop_event)
         return
 
@@ -1388,7 +1494,8 @@ def main():
             picam2.start(still_config, show_preview=False)
         else:
             picam2.start(preview_config, show_preview=False)
-            start_async_save_worker()
+            if cfg.capture_strategy == "same_request":
+                start_async_save_worker()
 
         configure_inference_roi()
 
@@ -1429,6 +1536,9 @@ def main():
                 continue
 
             request = picam2.capture_request()
+            metadata = None
+            capture_trigger_detections = None
+            capture_succeeded = False
             try:
                 metadata = request.get_metadata()
                 has_current_inference = metadata_has_current_inference(metadata)
@@ -1446,43 +1556,50 @@ def main():
                         fps_stale_suppressed_count += len(stale_detections)
 
                 if fresh_detections and has_current_inference:
-                    if capture_full_res_image(fresh_detections, request, metadata):
-                        if fps_logging_enabled:
-                            fps_queued_count += 1
-
-                if fps_logging_enabled:
-                    now_mono = time.monotonic()
-                    elapsed = now_mono - fps_window_start
-                    if elapsed >= cfg.fps_log_interval_sec:
-                        request_fps = fps_request_count / elapsed
-                        inference_fps = fps_inference_count / elapsed
-                        queued_fps = fps_queued_count / elapsed
-                        saves_completed = get_async_saves_completed()
-                        saved_fps = (saves_completed - fps_saved_start) / elapsed
-                        saves_dropped = get_async_saves_dropped()
-                        dropped_count = saves_dropped - fps_dropped_start
-                        pending_saves = save_queue.qsize() if save_queue is not None else 0
-                        frame_duration = metadata.get("FrameDuration")
-                        sensor_fps = (1000000.0 / frame_duration) if frame_duration else None
-                        sensor_text = f" sensor_fps={sensor_fps:.2f}" if sensor_fps else ""
-                        print(
-                            f"FPS: requests={request_fps:.2f} inference={inference_fps:.2f} "
-                            f"queued={queued_fps:.2f} saved={saved_fps:.2f} "
-                            f"stale_suppressed={fps_stale_suppressed_count} "
-                            f"dropped={dropped_count} total_dropped={saves_dropped} "
-                            f"pending_saves={pending_saves}{sensor_text}",
-                            flush=True,
-                        )
-                        fps_window_start = now_mono
-                        fps_request_count = 0
-                        fps_inference_count = 0
-                        fps_queued_count = 0
-                        fps_stale_suppressed_count = 0
-                        fps_saved_start = saves_completed
-                        fps_dropped_start = saves_dropped
-                time.sleep(0.001)
+                    if cfg.capture_strategy == "switch_burst":
+                        capture_trigger_detections = list(fresh_detections)
+                    else:
+                        capture_succeeded = capture_full_res_image(fresh_detections, request, metadata)
             finally:
                 request.release()
+
+            if capture_trigger_detections is not None:
+                capture_succeeded = capture_full_res_image(capture_trigger_detections, None, None)
+
+            if capture_succeeded and fps_logging_enabled:
+                fps_queued_count += 1
+
+            if fps_logging_enabled:
+                now_mono = time.monotonic()
+                elapsed = now_mono - fps_window_start
+                if elapsed >= cfg.fps_log_interval_sec:
+                    request_fps = fps_request_count / elapsed
+                    inference_fps = fps_inference_count / elapsed
+                    queued_fps = fps_queued_count / elapsed
+                    saves_completed = get_async_saves_completed()
+                    saved_fps = (saves_completed - fps_saved_start) / elapsed
+                    saves_dropped = get_async_saves_dropped()
+                    dropped_count = saves_dropped - fps_dropped_start
+                    pending_saves = save_queue.qsize() if save_queue is not None else 0
+                    frame_duration = metadata.get("FrameDuration") if metadata else None
+                    sensor_fps = (1000000.0 / frame_duration) if frame_duration else None
+                    sensor_text = f" sensor_fps={sensor_fps:.2f}" if sensor_fps else ""
+                    print(
+                        f"FPS: requests={request_fps:.2f} inference={inference_fps:.2f} "
+                        f"queued={queued_fps:.2f} saved={saved_fps:.2f} "
+                        f"stale_suppressed={fps_stale_suppressed_count} "
+                        f"dropped={dropped_count} total_dropped={saves_dropped} "
+                        f"pending_saves={pending_saves}{sensor_text}",
+                        flush=True,
+                    )
+                    fps_window_start = now_mono
+                    fps_request_count = 0
+                    fps_inference_count = 0
+                    fps_queued_count = 0
+                    fps_stale_suppressed_count = 0
+                    fps_saved_start = saves_completed
+                    fps_dropped_start = saves_dropped
+            time.sleep(0.001)
 
     except KeyboardInterrupt:
         with status_lock:

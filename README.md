@@ -78,7 +78,23 @@ it shows an early splash only when `[oled] enabled = true` in
 still come from `beecam_capture_final.py`.
 
 Wi-Fi is disabled in the BeeCam boot config to save power. Use Ethernet for SSH
-and NTP time sync.
+and NTP time sync. Time initialization skips the NTP wait when no wired Ethernet
+link is detected.
+
+## Capture And Storage
+
+Production capture scans in low-resolution mode by default and switches briefly
+to high-resolution still mode for a 2-image burst when a new detection track
+appears. The previous high-resolution same-request stream remains available
+with `capture_strategy = same_request` for hardware fallback.
+
+Production capture saves JPEG images only. The directory name
+`images_and_labels` is retained for compatibility with transfer workflows, but
+no label `.txt` files are produced.
+
+The OLED `SD` percentage shows BeeCam data size under `/home/pi/data` as a
+percentage of the SD card/root filesystem capacity. A separate internal rootfs
+fullness guard still stops capture if non-BeeCam data fills the card.
 
 ## Logging And Debugging
 
@@ -93,11 +109,25 @@ overrides.
 
 ## Field Runtime Updates
 
-For cameras that already have this repo at `/home/pi/setup`, update the runtime
-capture script, preview script, service file, and camera config with:
+For cameras that can be reached over Ethernet from a field laptop with this repo
+checked out locally, update the runtime capture script, preview script, service
+file, OLED boot splash service, and camera config with:
 
 ```bash
-ssh pi@cam7 'cd ~/setup && git pull --ff-only && chmod +x scripts/beecam-update-runtime.sh && scripts/beecam-update-runtime.sh --restart'
+./offline_update.sh cam7
+```
+
+The offline updater does not require internet on the camera. It rsyncs this repo
+to `/home/pi/setup`, verifies the rootfs data folders under `/home/pi/data`, and
+runs the camera-side runtime updater over SSH.
+
+If you are already on the camera and `/home/pi/setup` already contains the
+updated repo, you can run the camera-side updater directly:
+
+```bash
+cd ~/setup
+chmod +x scripts/beecam-update-runtime.sh
+scripts/beecam-update-runtime.sh --restart
 ```
 
 The updater backs up the current runtime files under
