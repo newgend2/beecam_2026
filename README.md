@@ -83,10 +83,11 @@ link is detected.
 
 ## Capture And Storage
 
-Production capture scans in low-resolution mode by default and switches briefly
-to high-resolution still mode for a 2-image burst when a new detection track
-appears. The previous high-resolution same-request stream remains available
-with `capture_strategy = same_request` for hardware fallback.
+Production model capture runs a high-resolution `main` stream and a low-res
+`lores` stream in the same Picamera2 request. Detections and stale matching use
+the `lores` stream coordinates, while saved JPEGs come from the high-resolution
+`main` buffer from the same completed request. The low-power switch/burst mode
+was removed because the mode-switch delay could miss fast insects.
 
 Production capture saves JPEG images only. The directory name
 `images_and_labels` is retained for compatibility with transfer workflows, but

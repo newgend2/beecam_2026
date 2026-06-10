@@ -41,23 +41,21 @@ Important preserved behavior:
   unless that is an intentional design change. They were removed because they
   could retrigger captures for persistent static objects and because model
   confidence was too variable.
-- The old default where model-triggered captures saved the full-resolution main
-  buffer from the same completed request was intentionally superseded after
-  field power measurements. Production capture now defaults to low-resolution
-  scanning with a short high-resolution still burst on new detection tracks.
-  Keep `camera.capture_strategy = same_request` only as an explicit fallback.
+- Model-triggered captures save the high-resolution `main` buffer from the same
+  completed request whose metadata produced the detection. The low-power
+  switch/burst path was intentionally removed after field tests showed the
+  mode-switch delay could miss fast insects.
 - Production capture intentionally saves JPEG images only. Do not reintroduce
   label `.txt` output or preview-to-still label coordinate conversion unless
   that is a deliberate labeling workflow change.
-- Detection and stale matching use low-resolution tracking coordinates. In the
-  same-request fallback, detections are still mapped to the lores stream.
+- Detection and stale matching use low-resolution `lores` tracking coordinates.
 - Normal `journalctl -u beecam.service` output is intentionally quiet by
   default and should show image-save messages during ordinary capture. Stale
   suppression logs, FPS counters/logs, queue timing logs, and startup/config/ROI
   logs are opt-in through `[debug]`.
 - FPS bookkeeping should stay disabled unless `debug.fps_log_interval_sec > 0`
   so normal capture avoids unnecessary per-frame accounting.
-- Default capture retriggering is one burst per newly created detection track;
+- Default capture retriggering is one capture per newly created detection track;
   do not restore repeated captures for the same persistent track unless the
   field power/storage tradeoff is being changed deliberately.
 - Normal model-detection OLED state should be either `SCANNING` or `DETECTION`;

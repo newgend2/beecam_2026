@@ -27,7 +27,7 @@ This repo supports the Beecam 2026 Raspberry Pi setup, including SD card prep, i
 - Before editing capture, preview, Witty Pi schedule, offline update, transfer, install, or data-directory init logic, check the protected-fix summary in `references/chat_history/README.md`.
 - Do not accidentally remove these protected behaviors:
   - class-aware NMS in the non-Nanodet YOLO path before stale detection;
-  - production model capture defaulting to low-res scan plus high-res still burst, with `same_request` kept only as an explicit fallback;
+  - production model captures saving the high-resolution `main` buffer from the same completed request whose metadata produced the detection;
   - production capture saving images only, with no label `.txt` output;
   - stale detection without periodic refresh captures or confidence-jump reactivation;
   - Witty Pi `WAIT` states skipping externally managed schedule endpoints;

@@ -43,8 +43,7 @@ save_stop_event = None
 CAPTURE_STREAM = "main"
 # IMX500 inference runs on the sensor's input tensor/ROI. This stream is the
 # Picamera2 output used for preview/debug coordinates, not the model input.
-LOW_RES_DETECTION_STREAM = "main"
-SAME_REQUEST_DETECTION_STREAM = "lores"
+DETECTION_STREAM = "lores"
 
 capture_in_progress = False
 last_capture_time = 0.0
@@ -61,6 +60,9 @@ last_stale_suppression_log = 0.0
 
 hostname = socket.gethostname()
 DATA_ROOT = "/home/pi/data"
+cached_images_root = None
+cached_images_day = None
+cached_images_dir = None
 
 
 @dataclass
@@ -78,8 +80,6 @@ class AppConfig:
     async_save_queue_size: int
     fps: int
     capture_cooldown_sec: float
-    capture_strategy: str
-    burst_count: int
 
     threshold: float
     iou: float
@@ -246,8 +246,6 @@ def read_config(config_path: str) -> AppConfig:
         async_save_queue_size=getint("camera", "async_save_queue_size", fallback=2),
         fps=getint("camera", "fps", fallback=10),
         capture_cooldown_sec=getfloat("camera", "capture_cooldown_sec", fallback=0.1),
-        capture_strategy=get("camera", "capture_strategy", fallback="switch_burst").strip().lower(),
-        burst_count=max(1, getint("camera", "burst_count", fallback=2)),
 
         threshold=getfloat("model", "threshold", fallback=0.30),
         iou=getfloat("model", "iou", fallback=0.65),
@@ -297,13 +295,6 @@ def read_config(config_path: str) -> AppConfig:
 
 def format_exception_name_and_message(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
-
-
-def validate_config():
-    if cfg.capture_strategy not in {"switch_burst", "same_request"}:
-        raise ValueError(
-            "camera.capture_strategy must be 'switch_burst' or 'same_request'"
-        )
 
 
 def cleanup_camera():
@@ -368,10 +359,17 @@ def ae_exposure_mode_from_string(name: str):
 
 
 def dated_images_dir(save_root: str):
+    global cached_images_root, cached_images_day, cached_images_dir
     day = datetime.now().strftime("%Y-%m-%d")
+    if cached_images_root == save_root and cached_images_day == day and cached_images_dir:
+        return cached_images_dir
+
     base = os.path.join(save_root, day)
     images_dir = os.path.join(base, "images")
     os.makedirs(images_dir, exist_ok=True)
+    cached_images_root = save_root
+    cached_images_day = day
+    cached_images_dir = images_dir
     return images_dir
 
 
@@ -648,23 +646,15 @@ class Detection:
         self.category = int(category)
         self.conf = float(conf)
         try:
-            self.box = imx500.convert_inference_coords(coords, metadata, picam2, stream=get_detection_stream())
+            self.box = imx500.convert_inference_coords(coords, metadata, picam2, stream=DETECTION_STREAM)
         except TypeError as e:
             if "stream" not in str(e):
                 raise
-            # Older Picamera2 releases only convert to the main stream. In the
-            # same-request fallback, main is full-res, so convert back to
-            # preview/lores tracking coordinates.
+            # Older Picamera2 releases only convert to the main stream. Main is
+            # full-res in model mode, so convert back to preview/lores tracking
+            # coordinates.
             box = imx500.convert_inference_coords(coords, metadata, picam2)
-            if cfg.capture_strategy == "same_request":
-                box = scale_box_still_to_preview(*box)
-            self.box = box
-
-
-def get_detection_stream() -> str:
-    if cfg is not None and cfg.capture_strategy == "same_request":
-        return SAME_REQUEST_DETECTION_STREAM
-    return LOW_RES_DETECTION_STREAM
+            self.box = scale_box_still_to_preview(*box)
 
 
 def parse_detections(metadata: dict):
@@ -1222,72 +1212,7 @@ def queue_capture_still(stem: str, detections, request, metadata):
     return True
 
 
-def capture_burst_images(detections) -> bool:
-    global capture_in_progress, last_capture_time
-
-    if capture_in_progress:
-        return False
-    if time.monotonic() - last_capture_time < cfg.capture_cooldown_sec:
-        return False
-    if storage_locked_or_full():
-        lock_storage_full()
-        return False
-
-    images_dir = dated_images_dir(cfg.save_root)
-    base_stem = make_stem()
-    detection_count = len(detections) if detections is not None else 0
-    saved_count = 0
-    switched_to_still = False
-
-    capture_in_progress = True
-    try:
-        with status_lock:
-            status.state = "DETECTION"
-
-        picam2.switch_mode(still_config)
-        switched_to_still = True
-
-        for index in range(cfg.burst_count):
-            if storage_locked_or_full():
-                lock_storage_full()
-                break
-
-            stem = f"{base_stem}_b{index + 1:02d}"
-            image_path = os.path.join(images_dir, f"{stem}.jpg")
-            request = None
-            try:
-                request = picam2.capture_request()
-                request.save(CAPTURE_STREAM, image_path)
-                saved_count += 1
-                _record_async_save(True)
-                last_capture_time = time.monotonic()
-                print(
-                    f"Capture saved: {image_path} detections={detection_count} "
-                    f"burst={index + 1}/{cfg.burst_count}",
-                    flush=True,
-                )
-                update_saved_status(stem)
-                if index + 1 < cfg.burst_count:
-                    with status_lock:
-                        if not status.storage_locked:
-                            status.state = "DETECTION"
-            finally:
-                if request is not None:
-                    request.release()
-    finally:
-        if switched_to_still:
-            picam2.switch_mode(preview_config)
-        capture_in_progress = False
-        with status_lock:
-            if not status.storage_locked and status.state == "DETECTION":
-                status.state = "SCANNING"
-
-    return saved_count > 0
-
-
 def capture_full_res_image(detections, request, metadata):
-    if cfg.capture_strategy == "switch_burst":
-        return capture_burst_images(detections)
     return queue_capture_still(make_stem(), detections=detections, request=request, metadata=metadata)
 
 
@@ -1371,26 +1296,18 @@ def build_camera_objects():
 
     preview_config = None
     if not cfg.timelapse_enabled:
-        if cfg.capture_strategy == "same_request":
-            preview_config = picam2.create_preview_configuration(
-                main={"size": (cfg.still_width, cfg.still_height), "format": "YUV420"},
-                lores={"size": (cfg.preview_width, cfg.preview_height), "format": "YUV420"},
-                controls=preview_controls,
-                buffer_count=cfg.buffer_count_preview,
-                display=SAME_REQUEST_DETECTION_STREAM,
-                encode=CAPTURE_STREAM,
-                queue=False,
-            )
-        else:
-            preview_config = picam2.create_preview_configuration(
-                main={"size": (cfg.preview_width, cfg.preview_height), "format": "YUV420"},
-                controls=preview_controls,
-                buffer_count=cfg.buffer_count_preview,
-                queue=False,
-            )
+        preview_config = picam2.create_preview_configuration(
+            main={"size": (cfg.still_width, cfg.still_height), "format": "YUV420"},
+            lores={"size": (cfg.preview_width, cfg.preview_height), "format": "YUV420"},
+            controls=preview_controls,
+            buffer_count=cfg.buffer_count_preview,
+            display=DETECTION_STREAM,
+            encode=CAPTURE_STREAM,
+            queue=False,
+        )
 
     still_config = None
-    if cfg.timelapse_enabled or cfg.capture_strategy == "switch_burst":
+    if cfg.timelapse_enabled:
         still_config = picam2.create_still_configuration(
             main={"size": (cfg.still_width, cfg.still_height), "format": "YUV420"},
             controls=still_controls,
@@ -1435,7 +1352,6 @@ def main():
 
     args = get_args()
     cfg = read_config(args.config)
-    validate_config()
 
     oled = OledDisplay(enabled=cfg.oled_enabled, log_errors=cfg.log_startup)
     _oled_show_safe(oled, [
@@ -1494,8 +1410,7 @@ def main():
             picam2.start(still_config, show_preview=False)
         else:
             picam2.start(preview_config, show_preview=False)
-            if cfg.capture_strategy == "same_request":
-                start_async_save_worker()
+            start_async_save_worker()
 
         configure_inference_roi()
 
@@ -1537,7 +1452,6 @@ def main():
 
             request = picam2.capture_request()
             metadata = None
-            capture_trigger_detections = None
             capture_succeeded = False
             try:
                 metadata = request.get_metadata()
@@ -1556,15 +1470,9 @@ def main():
                         fps_stale_suppressed_count += len(stale_detections)
 
                 if fresh_detections and has_current_inference:
-                    if cfg.capture_strategy == "switch_burst":
-                        capture_trigger_detections = list(fresh_detections)
-                    else:
-                        capture_succeeded = capture_full_res_image(fresh_detections, request, metadata)
+                    capture_succeeded = capture_full_res_image(fresh_detections, request, metadata)
             finally:
                 request.release()
-
-            if capture_trigger_detections is not None:
-                capture_succeeded = capture_full_res_image(capture_trigger_detections, None, None)
 
             if capture_succeeded and fps_logging_enabled:
                 fps_queued_count += 1
@@ -1599,8 +1507,6 @@ def main():
                     fps_stale_suppressed_count = 0
                     fps_saved_start = saves_completed
                     fps_dropped_start = saves_dropped
-            time.sleep(0.001)
-
     except KeyboardInterrupt:
         with status_lock:
             status.state = "STOPPING"
