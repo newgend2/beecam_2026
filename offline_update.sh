@@ -16,6 +16,12 @@ need_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "'$1' is required but was not found."
 }
 
+quote_for_remote_shell() {
+    printf "'"
+    printf "%s" "$1" | sed "s/'/'\\\\''/g"
+    printf "'"
+}
+
 normalize_host() {
     local host="$1"
     host="${host#${REMOTE_USER}@}"
@@ -23,6 +29,34 @@ normalize_host() {
     host="${host//[[:space:]]/}"
     [[ -n "$host" ]] || die "No camera hostname provided."
     printf '%s.local\n' "$host"
+}
+
+run_remote_runtime_update() {
+    local remote_command
+    remote_command=$(cat <<'REMOTE'
+set -euo pipefail
+
+cd /home/pi/setup
+chmod +x scripts/beecam-update-runtime.sh
+
+echo
+echo "==> Authenticating sudo on camera"
+sudo -v
+
+(
+    while true; do
+        sudo -n -v >/dev/null 2>&1 || exit
+        sleep 30
+    done
+) &
+sudo_keepalive_pid=$!
+trap 'kill "$sudo_keepalive_pid" >/dev/null 2>&1 || true' EXIT
+
+scripts/beecam-update-runtime.sh --restart
+REMOTE
+)
+
+    ssh -tt "$REMOTE" "bash -lc $(quote_for_remote_shell "$remote_command")"
 }
 
 need_cmd rsync
@@ -67,7 +101,7 @@ rsync -az --delete \
 
 echo
 echo "==> Running runtime updater on camera"
-ssh "$REMOTE" "cd ${REMOTE_SETUP} && chmod +x scripts/beecam-update-runtime.sh && scripts/beecam-update-runtime.sh --restart"
+run_remote_runtime_update
 
 echo
 echo "Offline update complete for ${REMOTE}."
