@@ -13,16 +13,17 @@ There is no separate removable data partition in the current fresh-card workflow
 
 ## Quick Start
 
-On a fresh Raspberry Pi, paste this from the default `/home/pi` directory:
+On a fresh Raspberry Pi, paste this from the default `/home/pi` directory. The
+current rootfs-data workflow lives on the `feature/no-exfat-data` branch:
 
 ```bash
-sudo apt update && sudo apt install -y git && git clone https://github.com/newgend2/beecam_2026.git setup && cd setup && chmod +x beecam_install.sh scripts/beecam-init-data.sh && ./beecam_install.sh --skip-apt-update
+sudo apt update && sudo apt install -y git && git clone --branch feature/no-exfat-data --single-branch https://github.com/newgend2/beecam_2026.git setup && cd setup && chmod +x beecam_install.sh scripts/beecam-init-data.sh && ./beecam_install.sh --skip-apt-update
 ```
 
 If the repo has already been cloned, rerun the installer with:
 
 ```bash
-cd ~/setup && git pull && chmod +x beecam_install.sh scripts/beecam-init-data.sh && ./beecam_install.sh
+cd ~/setup && git pull --ff-only && chmod +x beecam_install.sh scripts/beecam-init-data.sh && ./beecam_install.sh
 ```
 
 The installer:
