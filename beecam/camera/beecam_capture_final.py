@@ -167,7 +167,6 @@ class StaleTrack:
     last_seen: float
     last_capture: float
     suppressed_count: int = 0
-    capture_triggered: bool = False
 
 
 def log_exception_event(event_type: str, message: str, exc: BaseException | None = None):
@@ -908,7 +907,6 @@ def filter_stale_detections(detections):
             track = create_stale_track(detection, now_mono)
             matched_track_ids.add(track.id)
             fresh.append(detection)
-            track.capture_triggered = True
             continue
 
         matched_track_ids.add(track.id)
@@ -922,18 +920,14 @@ def filter_stale_detections(detections):
         if size_change:
             track.first_seen = now_mono
             track.last_capture = now_mono
-            if not track.capture_triggered:
-                fresh.append(detection)
-                track.capture_triggered = True
+            fresh.append(detection)
         elif stale_age >= cfg.stale_detection_sec:
             suppressed.append(detection)
             track.suppressed_count += 1
             stale_suppressed_total += 1
         else:
             track.last_capture = now_mono
-            if not track.capture_triggered:
-                fresh.append(detection)
-                track.capture_triggered = True
+            fresh.append(detection)
 
         update_track_from_detection(track, detection, now_mono)
 

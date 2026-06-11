@@ -55,9 +55,10 @@ Important preserved behavior:
   logs are opt-in through `[debug]`.
 - FPS bookkeeping should stay disabled unless `debug.fps_log_interval_sec > 0`
   so normal capture avoids unnecessary per-frame accounting.
-- Default capture retriggering is one capture per newly created detection track;
-  do not restore repeated captures for the same persistent track unless the
-  field power/storage tradeoff is being changed deliberately.
+- Non-stale matched detections should continue returning as fresh until they
+  cross the configured stale age. Do not reintroduce one-capture-per-track
+  gating; it can make capture appear to stop after the first detection without
+  producing stale-suppression logs.
 - Normal model-detection OLED state should be either `SCANNING` or `DETECTION`;
   the old `SAVED` state/overlay path was intentionally removed. Lifecycle and
   error states such as `INIT`, `FULL`, `STOPPING`, and `RESTART` are still
