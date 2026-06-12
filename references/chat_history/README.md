@@ -115,13 +115,13 @@ Protected files:
 Important preserved behavior:
 
 - `transfer_beecam.sh` should verify that the source is a mounted DATA
-  filesystem, archive the expected camera data, test the archive, and only then
-  delete transferred data from the SD card.
+  filesystem, archive the expected camera data, and only delete transferred
+  data from the SD card after the zip command exits successfully. As of the
+  2026 field-speed change, it intentionally skips the slower `unzip -t` archive
+  verification pass.
 - Keep the archive as store-only zip (`zip -0`) for JPEG-heavy camera data.
-  This avoids wasting time compressing already-compressed images while
-  preserving the stronger `unzip -t` verification flow before deletion. Do not
-  switch to plain tar unless weaker archive verification is an intentional
-  tradeoff.
+  This avoids wasting time compressing already-compressed images. Do not switch
+  to plain tar unless weaker archive handling is an intentional tradeoff.
 - The script should print DATA partition disk usage before transfer, then again
   before and after cleanup.
 - Cleanup should include `images_and_labels/`, `logs/`, `update_backups/`, and
@@ -130,9 +130,10 @@ Important preserved behavior:
 - The script should flush writes, verify cleanup, print before/after disk
   usage, change directory off the SD card, and unmount the DATA partition at
   the end.
-- The script unmounts the DATA partition it used. If a desktop also mounted
-  another card partition such as `boot`, the technician may still need to eject
-  that from the file manager.
+- The script unmounts the DATA partition it used and also attempts to unmount
+  sibling SD-card partitions. On Linux this is scoped to mounted `rootfs` and
+  `bootfs` labels on the same disk; on macOS it unmounts mountable partitions
+  from the same whole disk.
 - A display showing `0 pictures` but non-trivial `SD %` can mean `/data` was
   not mounted and the camera was reading root filesystem usage, or that hidden
   trash/filesystem metadata remain on the DATA partition.
