@@ -210,6 +210,9 @@ Important preserved behavior:
 - BeeCam and weather-station time initialization should keep NTP primary when
   Ethernet is connected, but skip the NTP wait quickly when no wired Ethernet
   carrier is detected.
+- The weather-station installer mirrors BeeCam installer behavior: it skips
+  `apt-get full-upgrade` by default, supports `--full-upgrade`, and supports
+  `--skip-apt-update` only for runs where `sudo apt update` has just completed.
 - `weather-station-init-data.sh` creates `/home/pi/data/logs` and
   `/home/pi/data/weather`, and seeds configs only when
   `/home/pi/data/configs` does not already exist.

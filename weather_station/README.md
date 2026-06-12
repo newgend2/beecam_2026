@@ -23,21 +23,32 @@ wind threshold.
 
 ## Quick Start
 
-On a fresh Raspberry Pi, paste this from the default `/home/pi` directory:
+On a fresh Raspberry Pi, paste this from the default `/home/pi` directory. The
+current rootfs-data workflow lives on the `feature/no-exfat-data` branch:
 
 ```bash
-sudo apt update && sudo apt install -y git && git clone https://github.com/newgend2/beecam_2026.git setup && cd setup/weather_station && chmod +x install_weather_station.sh scripts/weather-station-init-data.sh && ./install_weather_station.sh
+sudo apt update && sudo apt install -y git && git clone --branch feature/no-exfat-data --single-branch https://github.com/newgend2/beecam_2026.git setup && cd setup/weather_station && chmod +x install_weather_station.sh scripts/weather-station-init-data.sh && ./install_weather_station.sh --skip-apt-update
 ```
 
 If the repo has already been cloned, rerun the installer with:
 
 ```bash
-cd ~/setup && git pull && cd weather_station && chmod +x install_weather_station.sh scripts/weather-station-init-data.sh && ./install_weather_station.sh
+cd ~/setup && git pull --ff-only && cd weather_station && chmod +x install_weather_station.sh scripts/weather-station-init-data.sh && ./install_weather_station.sh
 ```
 
 The installer creates `/home/pi/data/configs`, `/home/pi/data/logs`, and
 `/home/pi/data/weather`. It seeds configs from `weather_station/configs` only
 when `/home/pi/data/configs` does not already exist.
+
+The installer skips `apt-get full-upgrade` by default. For a slower full OS
+refresh, run:
+
+```bash
+./install_weather_station.sh --full-upgrade
+```
+
+Use `--skip-apt-update` only when `sudo apt update` was already run immediately
+before the installer.
 
 ## Scheduling
 
