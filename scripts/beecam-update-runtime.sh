@@ -10,9 +10,11 @@ DATA_ROOT="${PI_HOME}/data"
 DATA_CONFIG_DIR="${DATA_ROOT}/configs"
 SERVICE_FILE="/etc/systemd/system/beecam.service"
 OLED_BOOT_SERVICE_FILE="/etc/systemd/system/beecam-oled-boot.service"
+WITTYPI_DIR="${PI_HOME}/wittypi"
 CAPTURE_SCRIPT="beecam_capture_final.py"
 DO_GIT_PULL=false
 RESTART_MODE="auto"
+UPDATE_SCHEDULE_CONF=false
 
 usage() {
     cat <<'USAGE'
@@ -23,6 +25,8 @@ Options:
   --git-pull                 Run git pull in this repo before installing files.
   --capture-script NAME      Use NAME in beecam.service ExecStart.
                              Default: beecam_capture_final.py
+  --update-schedule-conf     Also overwrite /home/pi/data/configs/schedule.conf.
+                             Use only when intentionally replacing live schedule settings.
   --restart                  Restart beecam.service after updating.
   --no-restart               Do not restart beecam.service after updating.
   -h, --help                 Show this help.
@@ -30,6 +34,7 @@ Options:
 Updates only runtime files:
   - /home/pi/beecam, excluding relegated reference scripts
   - /home/pi/data/configs/camera_config_final.ini, overwritten from this repo
+  - /home/pi/wittypi BeeCam scripts
   - /etc/systemd/system/beecam.service and beecam-oled-boot.service
 
 It does not install apt packages, Witty Pi, boot files, or partition anything.
@@ -74,6 +79,10 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
+        --update-schedule-conf)
+            UPDATE_SCHEDULE_CONF=true
+            shift
+            ;;
         --restart)
             RESTART_MODE="yes"
             shift
@@ -101,6 +110,12 @@ require_file "${REPO_DIR}/beecam/oled_boot_splash.py"
 require_file "${REPO_DIR}/configs/camera_config_final.ini"
 require_file "${REPO_DIR}/systemd_services/beecam.service"
 require_file "${REPO_DIR}/systemd_services/beecam-oled-boot.service"
+for script in beforeScript.sh afterStartup.sh runScript.sh beforeShutdown.sh; do
+    require_file "${REPO_DIR}/wittypi/${script}"
+done
+if $UPDATE_SCHEDULE_CONF; then
+    require_file "${REPO_DIR}/configs/schedule.conf"
+fi
 
 if $DO_GIT_PULL; then
     log "Pulling latest repo changes"
@@ -113,6 +128,9 @@ require_file "${REPO_DIR}/beecam/camera/beecam_preview.py"
 
 if [[ ! -d "$DATA_CONFIG_DIR" ]]; then
     die "${DATA_CONFIG_DIR} does not exist. Run the BeeCam installer or data initializer first."
+fi
+if [[ ! -d "$WITTYPI_DIR" ]]; then
+    die "${WITTYPI_DIR} does not exist. Run the BeeCam installer first."
 fi
 
 SERVICE_WAS_ACTIVE=false
@@ -141,6 +159,14 @@ fi
 if [[ -f "$OLED_BOOT_SERVICE_FILE" ]]; then
     sudo cp "$OLED_BOOT_SERVICE_FILE" "${BACKUP_ROOT}/beecam-oled-boot.service"
 fi
+if [[ -d "$WITTYPI_DIR" ]]; then
+    sudo mkdir -p "${BACKUP_ROOT}/wittypi"
+    for script in beforeScript.sh afterStartup.sh runScript.sh beforeShutdown.sh; do
+        if [[ -f "${WITTYPI_DIR}/${script}" ]]; then
+            sudo cp "${WITTYPI_DIR}/${script}" "${BACKUP_ROOT}/wittypi/${script}"
+        fi
+    done
+fi
 
 log "Updating /home/pi/beecam"
 sudo rm -rf "$APP_DIR"
@@ -155,6 +181,18 @@ sudo chown -R pi:pi "$APP_DIR"
 log "Updating ${DATA_CONFIG_DIR}/camera_config_final.ini"
 sudo mkdir -p "$DATA_CONFIG_DIR"
 sudo install -m 0644 "${REPO_DIR}/configs/camera_config_final.ini" "${DATA_CONFIG_DIR}/camera_config_final.ini"
+if $UPDATE_SCHEDULE_CONF; then
+    log "Updating ${DATA_CONFIG_DIR}/schedule.conf"
+    sudo install -m 0644 "${REPO_DIR}/configs/schedule.conf" "${DATA_CONFIG_DIR}/schedule.conf"
+else
+    warn "Preserving ${DATA_CONFIG_DIR}/schedule.conf; use --update-schedule-conf to replace live schedule settings."
+fi
+
+log "Updating Witty Pi scripts"
+for script in beforeScript.sh afterStartup.sh runScript.sh beforeShutdown.sh; do
+    sudo install -m 0755 "${REPO_DIR}/wittypi/${script}" "${WITTYPI_DIR}/${script}"
+done
+sudo chown pi:pi "${WITTYPI_DIR}/"*.sh
 
 log "Updating beecam.service"
 tmp_service="$(mktemp)"

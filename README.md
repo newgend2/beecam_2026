@@ -56,16 +56,26 @@ before the installer.
 ## Data Transfer
 
 To transfer data, shut the Pi down cleanly, insert the SD card into a Linux
-PC/laptop, mount the SD card root filesystem, and run:
+PC/laptop, mount the SD card partitions, and run:
+
+```bash
+./transfer_beecam.sh
+```
+
+The transfer script auto-detects cards mounted under `/media/wlab`,
+`/media/nate`, or `/media/field3`. If a mounted `DATA` partition exists, it uses
+that old exFAT data layout. Otherwise it looks for the current rootfs layout at
+`rootfs/home/pi/data`. If multiple candidate cards are mounted, pass the source
+and destination explicitly:
 
 ```bash
 ./transfer_beecam.sh /media/user/rootfs /media/user/BackupSSD
+./transfer_beecam.sh /media/user/DATA /media/user/BackupSSD
 ```
 
-The transfer script expects the mounted rootfs path, not `/home/pi/data`
-directly. It archives `/home/pi/data` contents with store-only zip, verifies the
-archive with `unzip -t`, cleans transferred capture/log/update data from
-`/home/pi/data`, flushes writes, and unmounts the rootfs partition.
+It archives the data contents with store-only zip, verifies the archive with
+`unzip -t`, cleans transferred capture/log/update data, flushes writes, and
+unmounts the source partition.
 
 ## Services
 
@@ -112,8 +122,8 @@ overrides.
 ## Field Runtime Updates
 
 For cameras that can be reached over Ethernet from a field laptop with this repo
-checked out locally, update the runtime capture script, preview script, service
-file, OLED boot splash service, and camera config with:
+checked out locally, update the runtime capture script, preview script, Witty Pi
+scripts, service file, OLED boot splash service, and camera config with:
 
 ```bash
 ./offline_update.sh cam7
@@ -136,8 +146,14 @@ The updater backs up the current runtime files under
 `/home/pi/data/update_backups/` before replacing them. It deploys only the
 production camera Python scripts (`beecam_capture_final.py` and
 `beecam_preview.py`) to `/home/pi/beecam/camera`, updates
-`beecam-oled-boot.service`, and overwrites
-`/home/pi/data/configs/camera_config_final.ini`.
+`beecam-oled-boot.service`, replaces the BeeCam Witty Pi scripts under
+`/home/pi/wittypi`, and overwrites `/home/pi/data/configs/camera_config_final.ini`.
+It preserves `/home/pi/data/configs/schedule.conf` by default. To intentionally
+replace the live schedule config with the repo default, run:
+
+```bash
+./offline_update.sh --update-schedule-conf cam7
+```
 
 ## Troubleshooting
 
