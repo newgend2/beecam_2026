@@ -152,6 +152,31 @@ repo `configs/` directory, updates
 `/home/pi/wittypi`, and installs the repo BeeCam service files under
 `/etc/systemd/system`.
 
+## Witty Pi Power-Cut Test
+
+To test whether a Witty Pi schedule survives an upstream power interruption,
+first update the camera so this repo exists at `/home/pi/setup`, then SSH to the
+camera and run:
+
+```bash
+cd ~/setup
+sudo scripts/wittypi-powercut-test.sh --shutdown-delay-sec 180 --off-duration-sec 300
+```
+
+The helper backs up `/home/pi/wittypi/schedule.wpi`, writes a short test
+schedule, and runs Witty Pi's normal `runScript.sh` to arm the shutdown and
+startup alarms. Let Witty Pi shut the Pi down, cut upstream power to the Witty
+Pi/regulator during the OFF interval, then restore upstream power before the
+printed startup time. The expected result is that the Pi stays off until the
+scheduled startup time, then boots.
+
+Normal BeeCam scheduling is regenerated on the next Witty Pi-managed boot. To
+cancel the test before shutdown and re-arm the previous schedule, run:
+
+```bash
+sudo scripts/wittypi-powercut-test.sh --restore
+```
+
 ## Troubleshooting
 
 Systemd service files are installed to:
