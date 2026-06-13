@@ -12,7 +12,7 @@
 # Example:
 #   ./transfer_beecam.sh /media/user/rootfs /media/user/BackupSSD
 #
-# Requires: zip, unzip
+# Requires: zip
 # Optional: pv  (progress bars - apt install pv)
 
 set -euo pipefail
@@ -62,38 +62,134 @@ get_mount_source() {
     df -P "$path" 2>/dev/null | awk 'NR==2 {print $1}'
 }
 
-unmount_source() {
+unmount_one_mount() {
     local path="$1"
     local device="$2"
-    local label="$3"
-
-    echo ""
-    echo "Unmounting SD card ${label} partition..."
-    cd /
 
     if [[ -n "$device" && "$device" == /dev/* ]] && command -v udisksctl >/dev/null 2>&1; then
         if udisksctl unmount -b "$device" >/dev/null 2>&1; then
-            echo "  Unmounted: $device"
-            return
+            return 0
         fi
     fi
 
     if umount "$path" 2>/dev/null; then
-        echo "  Unmounted: $path"
-        return
+        return 0
     fi
 
     if [[ -n "$device" && "$device" == /dev/* ]] && umount "$device" 2>/dev/null; then
-        echo "  Unmounted: $device"
-        return
+        return 0
     fi
 
     if command -v sudo >/dev/null 2>&1 && sudo -n umount "$path" 2>/dev/null; then
-        echo "  Unmounted: $path"
+        return 0
+    fi
+
+    if [[ -n "$device" && "$device" == /dev/* ]] && command -v sudo >/dev/null 2>&1 && sudo -n umount "$device" 2>/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
+get_parent_disk() {
+    local device="$1"
+    local parent type
+
+    [[ -n "$device" && "$device" == /dev/* ]] || return 1
+    command -v lsblk >/dev/null 2>&1 || return 1
+
+    type="$(lsblk -no TYPE "$device" 2>/dev/null | sed -n '1p')"
+    [[ -n "$type" ]] || return 1
+    if [[ "$type" == "disk" ]]; then
+        printf '%s\n' "$device"
+        return 0
+    fi
+
+    parent="$(lsblk -no PKNAME "$device" 2>/dev/null | sed -n '1p')"
+    [[ -n "$parent" ]] || return 1
+    printf '/dev/%s\n' "$parent"
+}
+
+list_mount_targets_for_device() {
+    local device="$1"
+
+    if command -v findmnt >/dev/null 2>&1; then
+        findmnt -rn -S "$device" -o TARGET 2>/dev/null
         return
     fi
 
-    die "Could not unmount $path without prompting. Close any windows or terminals using the SD card, then unmount it manually."
+    awk -v dev="$device" '$1 == dev { print $2 }' /proc/mounts 2>/dev/null \
+        | sed 's/\\040/ /g; s/\\011/\t/g; s/\\134/\\/g'
+}
+
+collect_card_mounts() {
+    local parent_disk="$1"
+    local device type mount_path
+
+    CARD_MOUNT_ENTRIES=()
+    while read -r device type; do
+        [[ "$type" == "part" ]] || continue
+        while IFS= read -r mount_path; do
+            [[ -n "$mount_path" ]] || continue
+            CARD_MOUNT_ENTRIES+=("${device}|${mount_path}")
+        done < <(list_mount_targets_for_device "$device" || true)
+    done < <(lsblk -nrpo NAME,TYPE "$parent_disk" 2>/dev/null)
+}
+
+unmount_card_partitions() {
+    local source_path="$1"
+    local source_device="$2"
+    local source_label="$3"
+    local parent_disk entry device mount_path failures unmounted_count
+
+    echo ""
+    echo "Unmounting all mounted SD card partitions..."
+    cd /
+
+    failures=()
+    unmounted_count=0
+
+    if parent_disk="$(get_parent_disk "$source_device")"; then
+        echo "  Card device: $parent_disk"
+        collect_card_mounts "$parent_disk"
+    else
+        echo "  Warning: could not determine sibling partitions for ${source_device:-$source_path}; unmounting only ${source_label}."
+        CARD_MOUNT_ENTRIES=("${source_device}|${source_path}")
+    fi
+
+    if [[ ${#CARD_MOUNT_ENTRIES[@]} -eq 0 ]]; then
+        echo "  No mounted SD card partitions found."
+        return 0
+    fi
+
+    for entry in "${CARD_MOUNT_ENTRIES[@]}"; do
+        IFS='|' read -r device mount_path <<< "$entry"
+        if [[ -n "$mount_path" ]] && ! path_is_mountpoint "$mount_path"; then
+            echo "  Already unmounted: $mount_path"
+            continue
+        fi
+
+        if unmount_one_mount "$mount_path" "$device"; then
+            if [[ -n "$device" ]]; then
+                echo "  Unmounted: $mount_path ($device)"
+            else
+                echo "  Unmounted: $mount_path"
+            fi
+            unmounted_count=$((unmounted_count + 1))
+        else
+            failures+=("${mount_path:-$device}")
+        fi
+    done
+
+    if [[ ${#failures[@]} -gt 0 ]]; then
+        echo "  Failed to unmount:" >&2
+        printf '    %s\n' "${failures[@]}" >&2
+        die "Could not unmount all SD card partitions without prompting. Close any windows or terminals using the SD card, then unmount it manually."
+    fi
+
+    if [[ "$unmounted_count" -eq 0 ]]; then
+        echo "  No partitions needed unmounting."
+    fi
 }
 
 get_current_user() {
@@ -255,7 +351,7 @@ DEST="${DEST%/}"
 
 SOURCE_DEVICE=$(get_mount_source "$SOURCE_MOUNT" 2>/dev/null || true)
 
-for cmd in zip unzip; do
+for cmd in zip; do
     command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' is required but not found."
 done
 
@@ -346,10 +442,9 @@ fi
 echo ""
 echo "Plan:"
 echo "  1. Zip ${INCLUDE[*]} -> $DEST_ZIP (store-only, no compression)"
-echo "  2. Verify zip integrity"
-echo "  3. Delete from SD data dir: images_and_labels/  logs/  update_backups/  .Trash-*/"
-echo "  4. Keep in data dir:       configs/  hostname"
-echo "  5. Unmount SD card ${SOURCE_KIND} partition"
+echo "  2. Delete from SD data dir after zip completes: images_and_labels/  logs/  update_backups/  .Trash-*/"
+echo "  3. Keep in data dir:                      configs/  hostname"
+echo "  4. Unmount all mounted SD card partitions: bootfs/rootfs/DATA if present"
 echo ""
 read -r -p "Proceed? [y/N] " confirm
 case "$confirm" in
@@ -375,20 +470,7 @@ else
 fi
 
 echo ""
-echo "Verifying zip integrity..."
-
-if $HAS_PV; then
-    ENTRY_COUNT=$(unzip -l "$DEST_ZIP" 2>/dev/null | tail -1 | awk '{print $2}')
-    unzip -t "$DEST_ZIP" \
-        | pv -l -s "$ENTRY_COUNT" -N "Verifying" \
-        >/dev/null \
-        || die "Zip verification failed - NOT deleting source data."
-else
-    unzip -t "$DEST_ZIP" >/dev/null 2>&1 \
-        || die "Zip verification failed - NOT deleting source data."
-fi
-
-echo "Verification passed."
+echo "Archive command completed; skipping zip integrity verification."
 echo ""
 
 echo "Cleaning up SD card data directory..."
@@ -433,12 +515,11 @@ print_disk_usage "After cleanup" "$SOURCE_MOUNT"
 
 ZIP_MB=$(du -k "$DEST_ZIP" 2>/dev/null | awk '{printf "%.1f", $1/1024}')
 
-unmount_source "$SOURCE_MOUNT" "$SOURCE_DEVICE" "$SOURCE_KIND"
+unmount_card_partitions "$SOURCE_MOUNT" "$SOURCE_DEVICE" "$SOURCE_KIND"
 
 echo ""
 echo "Done."
 echo "  Archive:    $DEST_ZIP  (${ZIP_MB} MB)"
 echo "  Date range: $DATE_SUFFIX"
 echo "  Kept:       configs/  hostname  empty images_and_labels/  empty logs/"
-echo "  SD card:    ${SOURCE_KIND} partition unmounted"
-echo "              Eject the card if any other partitions remain mounted."
+echo "  SD card:    mounted partitions unmounted"

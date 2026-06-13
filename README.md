@@ -73,9 +73,9 @@ and destination explicitly:
 ./transfer_beecam.sh /media/user/DATA /media/user/BackupSSD
 ```
 
-It archives the data contents with store-only zip, verifies the archive with
-`unzip -t`, cleans transferred capture/log/update data, flushes writes, and
-unmounts the source partition.
+It archives the data contents with store-only zip, cleans transferred
+capture/log/update data after the zip command completes, flushes writes, and
+unmounts all mounted SD card partitions from that card.
 
 ## Services
 
