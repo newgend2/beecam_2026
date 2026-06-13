@@ -8,7 +8,6 @@ REMOTE_SETUP="/home/pi/setup"
 REMOTE_DATA_ROOT="/home/pi/data"
 SSH_CONTROL_DIR=""
 SSH_CONTROL_PATH=""
-UPDATE_SCHEDULE_CONF=false
 
 usage() {
     cat <<'USAGE'
@@ -16,9 +15,9 @@ Usage:
   ./offline_update.sh [options] [camera-hostname]
 
 Options:
-  --update-schedule-conf   Also replace /home/pi/data/configs/schedule.conf.
-                           Use only when intentionally overwriting live schedule settings.
   -h, --help               Show this help.
+
+This update replaces BeeCam runtime scripts, model assets, service files, and /home/pi/data/configs from this repo.
 USAGE
 }
 
@@ -71,10 +70,6 @@ need_cmd ssh
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --update-schedule-conf)
-            UPDATE_SCHEDULE_CONF=true
-            shift
-            ;;
         -h|--help)
             usage
             exit 0
@@ -103,11 +98,7 @@ echo
 echo "Camera: ${REMOTE}"
 echo "Source: ${SCRIPT_DIR}/"
 echo "Target: ${REMOTE}:${REMOTE_SETUP}/"
-if $UPDATE_SCHEDULE_CONF; then
-    echo "Schedule: will overwrite ${REMOTE_DATA_ROOT}/configs/schedule.conf"
-else
-    echo "Schedule: preserving existing ${REMOTE_DATA_ROOT}/configs/schedule.conf"
-fi
+echo "Configs: will replace ${REMOTE_DATA_ROOT}/configs from this repo"
 echo
 read -r -p "Proceed with offline update? [y/N] " confirm
 case "$confirm" in
@@ -134,9 +125,6 @@ rsync -az --delete \
 echo
 echo "==> Running runtime updater on camera"
 runtime_args=(--restart)
-if $UPDATE_SCHEDULE_CONF; then
-    runtime_args+=(--update-schedule-conf)
-fi
 printf -v runtime_args_q ' %q' "${runtime_args[@]}"
 ssh_reuse "cd ${REMOTE_SETUP} && chmod +x scripts/beecam-update-runtime.sh && scripts/beecam-update-runtime.sh${runtime_args_q}"
 

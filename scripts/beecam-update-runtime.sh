@@ -8,13 +8,12 @@ PI_HOME="/home/pi"
 APP_DIR="${PI_HOME}/beecam"
 DATA_ROOT="${PI_HOME}/data"
 DATA_CONFIG_DIR="${DATA_ROOT}/configs"
-SERVICE_FILE="/etc/systemd/system/beecam.service"
-OLED_BOOT_SERVICE_FILE="/etc/systemd/system/beecam-oled-boot.service"
+SERVICE_DIR="/etc/systemd/system"
+DATA_INIT="/usr/local/sbin/beecam-init-data.sh"
 WITTYPI_DIR="${PI_HOME}/wittypi"
 CAPTURE_SCRIPT="beecam_capture_final.py"
 DO_GIT_PULL=false
 RESTART_MODE="auto"
-UPDATE_SCHEDULE_CONF=false
 
 usage() {
     cat <<'USAGE'
@@ -25,17 +24,17 @@ Options:
   --git-pull                 Run git pull in this repo before installing files.
   --capture-script NAME      Use NAME in beecam.service ExecStart.
                              Default: beecam_capture_final.py
-  --update-schedule-conf     Also overwrite /home/pi/data/configs/schedule.conf.
-                             Use only when intentionally replacing live schedule settings.
   --restart                  Restart beecam.service after updating.
   --no-restart               Do not restart beecam.service after updating.
   -h, --help                 Show this help.
 
 Updates only runtime files:
   - /home/pi/beecam, excluding relegated reference scripts
-  - /home/pi/data/configs/camera_config_final.ini, overwritten from this repo
+  - /home/pi/beecam/camera/packerout model assets
+  - /home/pi/data/configs, replaced from this repo
+  - /usr/local/sbin/beecam-init-data.sh
   - /home/pi/wittypi BeeCam scripts
-  - /etc/systemd/system/beecam.service and beecam-oled-boot.service
+  - /etc/systemd/system BeeCam service files
 
 It does not install apt packages, Witty Pi, boot files, or partition anything.
 USAGE
@@ -79,10 +78,6 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
-        --update-schedule-conf)
-            UPDATE_SCHEDULE_CONF=true
-            shift
-            ;;
         --restart)
             RESTART_MODE="yes"
             shift
@@ -105,22 +100,23 @@ if [[ "$(id -u)" -eq 0 ]]; then
     die "Run as the pi user, not with sudo. The script will call sudo when needed."
 fi
 
-require_file "${REPO_DIR}/beecam"
-require_file "${REPO_DIR}/beecam/oled_boot_splash.py"
-require_file "${REPO_DIR}/configs/camera_config_final.ini"
-require_file "${REPO_DIR}/systemd_services/beecam.service"
-require_file "${REPO_DIR}/systemd_services/beecam-oled-boot.service"
-for script in beforeScript.sh afterStartup.sh runScript.sh beforeShutdown.sh; do
-    require_file "${REPO_DIR}/wittypi/${script}"
-done
-if $UPDATE_SCHEDULE_CONF; then
-    require_file "${REPO_DIR}/configs/schedule.conf"
-fi
-
 if $DO_GIT_PULL; then
     log "Pulling latest repo changes"
     git -C "$REPO_DIR" pull --ff-only
 fi
+
+require_file "${REPO_DIR}/beecam"
+require_file "${REPO_DIR}/beecam/oled_boot_splash.py"
+require_file "${REPO_DIR}/beecam/camera/packerout"
+require_file "${REPO_DIR}/configs"
+require_file "${REPO_DIR}/scripts/beecam-init-data.sh"
+for script in beforeScript.sh afterStartup.sh runScript.sh beforeShutdown.sh; do
+    require_file "${REPO_DIR}/wittypi/${script}"
+done
+shopt -s nullglob
+SERVICE_FILES=("${REPO_DIR}"/systemd_services/*.service)
+shopt -u nullglob
+[[ ${#SERVICE_FILES[@]} -gt 0 ]] || die "No service files found in ${REPO_DIR}/systemd_services"
 
 [[ "$CAPTURE_SCRIPT" != */* ]] || die "--capture-script must be a filename, not a path"
 require_file "${REPO_DIR}/beecam/camera/${CAPTURE_SCRIPT}"
@@ -153,11 +149,15 @@ if [[ -d "$DATA_CONFIG_DIR" ]]; then
     sudo mkdir -p "${BACKUP_ROOT}/configs"
     sudo cp -r "${DATA_CONFIG_DIR}/." "${BACKUP_ROOT}/configs/"
 fi
-if [[ -f "$SERVICE_FILE" ]]; then
-    sudo cp "$SERVICE_FILE" "${BACKUP_ROOT}/beecam.service"
-fi
-if [[ -f "$OLED_BOOT_SERVICE_FILE" ]]; then
-    sudo cp "$OLED_BOOT_SERVICE_FILE" "${BACKUP_ROOT}/beecam-oled-boot.service"
+sudo mkdir -p "${BACKUP_ROOT}/systemd_services"
+for service in "${SERVICE_FILES[@]}"; do
+    service_name="$(basename "$service")"
+    if [[ -f "${SERVICE_DIR}/${service_name}" ]]; then
+        sudo cp "${SERVICE_DIR}/${service_name}" "${BACKUP_ROOT}/systemd_services/${service_name}"
+    fi
+done
+if [[ -f "$DATA_INIT" ]]; then
+    sudo cp "$DATA_INIT" "${BACKUP_ROOT}/beecam-init-data.sh"
 fi
 if [[ -d "$WITTYPI_DIR" ]]; then
     sudo mkdir -p "${BACKUP_ROOT}/wittypi"
@@ -178,15 +178,14 @@ sudo find "${APP_DIR}/camera" -maxdepth 1 -type f -name '*.py' \
     -delete
 sudo chown -R pi:pi "$APP_DIR"
 
-log "Updating ${DATA_CONFIG_DIR}/camera_config_final.ini"
-sudo mkdir -p "$DATA_CONFIG_DIR"
-sudo install -m 0644 "${REPO_DIR}/configs/camera_config_final.ini" "${DATA_CONFIG_DIR}/camera_config_final.ini"
-if $UPDATE_SCHEDULE_CONF; then
-    log "Updating ${DATA_CONFIG_DIR}/schedule.conf"
-    sudo install -m 0644 "${REPO_DIR}/configs/schedule.conf" "${DATA_CONFIG_DIR}/schedule.conf"
-else
-    warn "Preserving ${DATA_CONFIG_DIR}/schedule.conf; use --update-schedule-conf to replace live schedule settings."
-fi
+log "Replacing ${DATA_CONFIG_DIR} from repo configs"
+sudo rm -rf "$DATA_CONFIG_DIR"
+sudo install -d -o pi -g pi -m 0755 "$DATA_CONFIG_DIR"
+sudo cp -a "${REPO_DIR}/configs/." "$DATA_CONFIG_DIR/"
+sudo chown -R pi:pi "$DATA_CONFIG_DIR"
+
+log "Updating ${DATA_INIT}"
+sudo install -m 0755 "${REPO_DIR}/scripts/beecam-init-data.sh" "$DATA_INIT"
 
 log "Updating Witty Pi scripts"
 for script in beforeScript.sh afterStartup.sh runScript.sh beforeShutdown.sh; do
@@ -194,17 +193,26 @@ for script in beforeScript.sh afterStartup.sh runScript.sh beforeShutdown.sh; do
 done
 sudo chown pi:pi "${WITTYPI_DIR}/"*.sh
 
-log "Updating beecam.service"
-tmp_service="$(mktemp)"
-sed "s#ExecStart=.*#ExecStart=/usr/bin/python3 /home/pi/beecam/camera/${CAPTURE_SCRIPT} --config ${DATA_CONFIG_DIR}/camera_config_final.ini#" \
-    "${REPO_DIR}/systemd_services/beecam.service" > "$tmp_service"
-sudo install -m 0644 "$tmp_service" "$SERVICE_FILE"
-rm -f "$tmp_service"
-
-log "Updating beecam-oled-boot.service"
-sudo install -m 0644 "${REPO_DIR}/systemd_services/beecam-oled-boot.service" "$OLED_BOOT_SERVICE_FILE"
+log "Updating systemd service files"
+for service in "${SERVICE_FILES[@]}"; do
+    service_name="$(basename "$service")"
+    if [[ "$service_name" == "beecam.service" ]]; then
+        tmp_service="$(mktemp)"
+        sed "s#ExecStart=.*#ExecStart=/usr/bin/python3 /home/pi/beecam/camera/${CAPTURE_SCRIPT} --config ${DATA_CONFIG_DIR}/camera_config_final.ini#" \
+            "$service" > "$tmp_service"
+        sudo install -m 0644 "$tmp_service" "${SERVICE_DIR}/${service_name}"
+        rm -f "$tmp_service"
+    else
+        sudo install -m 0644 "$service" "${SERVICE_DIR}/${service_name}"
+    fi
+done
 sudo systemctl daemon-reload
-sudo systemctl enable beecam-oled-boot.service
+for service in "${SERVICE_FILES[@]}"; do
+    service_name="$(basename "$service")"
+    if [[ "$service_name" != "beecam.service" ]]; then
+        sudo systemctl enable "$service_name"
+    fi
+done
 
 if [[ "$RESTART_MODE" == "yes" || ( "$RESTART_MODE" == "auto" && "$SERVICE_WAS_ACTIVE" == "true" ) ]]; then
     log "Starting beecam.service"
@@ -217,5 +225,6 @@ fi
 
 log "Runtime update complete"
 echo "  Capture script: ${CAPTURE_SCRIPT}"
+echo "  Configs:        ${DATA_CONFIG_DIR}"
 echo "  Backup:         ${BACKUP_ROOT}"
 echo "  Service:        $(systemctl is-active beecam.service || true)"

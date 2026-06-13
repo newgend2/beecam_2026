@@ -122,8 +122,8 @@ overrides.
 ## Field Runtime Updates
 
 For cameras that can be reached over Ethernet from a field laptop with this repo
-checked out locally, update the runtime capture script, preview script, Witty Pi
-scripts, service file, OLED boot splash service, and camera config with:
+checked out locally, update BeeCam runtime scripts, model assets, Witty Pi
+scripts, service files, and configs with:
 
 ```bash
 ./offline_update.sh cam7
@@ -145,15 +145,12 @@ scripts/beecam-update-runtime.sh --restart
 The updater backs up the current runtime files under
 `/home/pi/data/update_backups/` before replacing them. It deploys only the
 production camera Python scripts (`beecam_capture_final.py` and
-`beecam_preview.py`) to `/home/pi/beecam/camera`, updates
-`beecam-oled-boot.service`, replaces the BeeCam Witty Pi scripts under
-`/home/pi/wittypi`, and overwrites `/home/pi/data/configs/camera_config_final.ini`.
-It preserves `/home/pi/data/configs/schedule.conf` by default. To intentionally
-replace the live schedule config with the repo default, run:
-
-```bash
-./offline_update.sh --update-schedule-conf cam7
-```
+`beecam_preview.py`) to `/home/pi/beecam/camera`, replaces model assets under
+`/home/pi/beecam/camera/packerout`, replaces `/home/pi/data/configs` from the
+repo `configs/` directory, updates
+`/usr/local/sbin/beecam-init-data.sh`, replaces the BeeCam Witty Pi scripts under
+`/home/pi/wittypi`, and installs the repo BeeCam service files under
+`/etc/systemd/system`.
 
 ## Troubleshooting
 
