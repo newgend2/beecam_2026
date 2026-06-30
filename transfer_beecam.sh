@@ -20,6 +20,13 @@ set -euo pipefail
 die() { echo "Error: $*" >&2; exit 1; }
 
 MEDIA_ROOTS=(/media/wlab /media/nate /media/field3)
+DATA_OWNER=""
+SUDO_READY=false
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+if [[ "$SCRIPT_PATH" != /* ]]; then
+    SCRIPT_PATH="$PWD/$SCRIPT_PATH"
+fi
+ORIGINAL_ARGS=("$@")
 
 path_is_mountpoint() {
     local path="$1"
@@ -53,6 +60,146 @@ print_disk_usage() {
     printf "  %s: %s used of %s (%s)\n" "$label" "$used" "$size" "$pct"
 }
 
+mount_is_readonly() {
+    local path="$1"
+    local opts
+
+    if command -v findmnt >/dev/null 2>&1; then
+        opts="$(findmnt -n -o OPTIONS --target "$path" 2>/dev/null | sed -n '1p')"
+        [[ ",$opts," == *,ro,* ]]
+        return
+    fi
+
+    return 1
+}
+
+require_data_child_path() {
+    local path="$1"
+    case "$path" in
+        "$DATA_SRC"/*) ;;
+        *) die "Refusing to delete path outside BeeCam data directory: $path" ;;
+    esac
+}
+
+set_data_owner() {
+    DATA_OWNER="$(stat -c '%u:%g' "$DATA_SRC" 2>/dev/null || true)"
+    [[ -n "$DATA_OWNER" ]] || DATA_OWNER="1000:1000"
+}
+
+ensure_sudo_ready() {
+    if [[ "$(id -u)" -eq 0 ]] || $SUDO_READY; then
+        return 0
+    fi
+    command -v sudo >/dev/null 2>&1 || die "sudo is required to clean root-owned files from this card"
+    sudo -v || die "sudo authentication failed; cannot clean root-owned files from this card"
+    SUDO_READY=true
+}
+
+run_with_privilege() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        "$@"
+    else
+        ensure_sudo_ready
+        sudo "$@"
+    fi
+}
+
+remount_source_readwrite() {
+    echo "Source mount is read-only: $SOURCE_MOUNT"
+    echo "Trying to remount it read-write..."
+
+    if run_with_privilege mount -o remount,rw "$SOURCE_MOUNT"; then
+        if ! mount_is_readonly "$SOURCE_MOUNT"; then
+            echo "Remounted source read-write."
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+ensure_source_writable() {
+    mount_is_readonly "$SOURCE_MOUNT" || return 0
+
+    if remount_source_readwrite; then
+        return 0
+    fi
+
+    die "Could not remount source read-write: $SOURCE_MOUNT. The script must delete transferred data after archiving. Unmount the card and run fsck on the SD partition before retrying; Linux mounted it read-only, often because ext4 detected filesystem errors."
+}
+
+maybe_chown_data_path() {
+    local path="$1"
+    [[ -n "$DATA_OWNER" && -e "$path" ]] || return 0
+
+    if chown "$DATA_OWNER" "$path" 2>/dev/null; then
+        return 0
+    fi
+    if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+        sudo -n chown "$DATA_OWNER" "$path" 2>/dev/null || true
+    fi
+}
+
+maybe_chown_archive() {
+    local path="$1"
+    [[ -f "$path" ]] || return 0
+    if [[ "$(id -u)" -eq 0 && -n "${SUDO_UID:-}" ]]; then
+        chown "${SUDO_UID}:${SUDO_GID:-$SUDO_UID}" "$path" 2>/dev/null || true
+    fi
+}
+
+preflight_cleanup_sudo() {
+    if [[ "$SOURCE_KIND" == "rootfs" && -d "$DATA_SRC/update_backups" && "$(id -u)" -ne 0 ]]; then
+        echo ""
+        echo "Note: this rootfs card has update_backups/, which may contain root-owned files."
+        echo "Caching sudo credentials now so cleanup does not stop after the archive is written."
+        ensure_sudo_ready
+    fi
+}
+
+remove_data_path() {
+    local path="$1"
+    local label="$2"
+    local verb="${3:-Deleted}"
+
+    require_data_child_path "$path"
+    [[ -e "$path" ]] || return 0
+
+    if rm -rf "$path" 2>/dev/null; then
+        echo "  ${verb}: $label"
+        return 0
+    fi
+
+    echo "  Permission denied deleting ${label}; retrying with sudo..."
+    if [[ "$(id -u)" -eq 0 ]]; then
+        rm -rf "$path" || die "Could not delete $path"
+    else
+        ensure_sudo_ready
+        sudo rm -rf "$path" || die "Could not delete $path even with sudo"
+    fi
+    echo "  ${verb}: $label"
+}
+
+ensure_empty_data_dir() {
+    local path="$1"
+    local label="$2"
+
+    require_data_child_path "$path"
+    if mkdir -p "$path" 2>/dev/null; then
+        maybe_chown_data_path "$path"
+        return 0
+    fi
+
+    echo "  Permission denied creating ${label}; retrying with sudo..."
+    if [[ "$(id -u)" -eq 0 ]]; then
+        mkdir -p "$path" || die "Could not create $path"
+    else
+        ensure_sudo_ready
+        sudo mkdir -p "$path" || die "Could not create $path even with sudo"
+    fi
+    maybe_chown_data_path "$path"
+}
+
 get_mount_source() {
     local path="$1"
     if command -v findmnt >/dev/null 2>&1; then
@@ -72,6 +219,12 @@ unmount_one_mount() {
         fi
     fi
 
+    if [[ -n "$device" && "$device" == /dev/* ]] && command -v sudo >/dev/null 2>&1; then
+        if run_with_privilege udisksctl unmount -b "$device" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
     if umount "$path" 2>/dev/null; then
         return 0
     fi
@@ -80,15 +233,34 @@ unmount_one_mount() {
         return 0
     fi
 
-    if command -v sudo >/dev/null 2>&1 && sudo -n umount "$path" 2>/dev/null; then
+    if command -v sudo >/dev/null 2>&1 && run_with_privilege umount "$path" 2>/dev/null; then
         return 0
     fi
 
-    if [[ -n "$device" && "$device" == /dev/* ]] && command -v sudo >/dev/null 2>&1 && sudo -n umount "$device" 2>/dev/null; then
+    if [[ -n "$device" && "$device" == /dev/* ]] && command -v sudo >/dev/null 2>&1 && run_with_privilege umount "$device" 2>/dev/null; then
         return 0
     fi
 
     return 1
+}
+
+power_off_card_device() {
+    local parent_disk="$1"
+
+    [[ -n "$parent_disk" && "$parent_disk" == /dev/* ]] || return 0
+    command -v udisksctl >/dev/null 2>&1 || return 0
+
+    if udisksctl power-off -b "$parent_disk" >/dev/null 2>&1; then
+        echo "  Powered off card device: $parent_disk"
+        return 0
+    fi
+
+    if command -v sudo >/dev/null 2>&1 && run_with_privilege udisksctl power-off -b "$parent_disk" >/dev/null 2>&1; then
+        echo "  Powered off card device: $parent_disk"
+        return 0
+    fi
+
+    echo "  Warning: could not power off card device $parent_disk; remove it after unmount completes."
 }
 
 get_parent_disk() {
@@ -140,7 +312,7 @@ unmount_card_partitions() {
     local source_path="$1"
     local source_device="$2"
     local source_label="$3"
-    local parent_disk entry device mount_path failures unmounted_count
+    local parent_disk entry device mount_path failures unmounted_count parent_known
 
     echo ""
     echo "Unmounting all mounted SD card partitions..."
@@ -148,8 +320,10 @@ unmount_card_partitions() {
 
     failures=()
     unmounted_count=0
+    parent_known=false
 
     if parent_disk="$(get_parent_disk "$source_device")"; then
+        parent_known=true
         echo "  Card device: $parent_disk"
         collect_card_mounts "$parent_disk"
     else
@@ -190,6 +364,10 @@ unmount_card_partitions() {
     if [[ "$unmounted_count" -eq 0 ]]; then
         echo "  No partitions needed unmounting."
     fi
+
+    if $parent_known; then
+        power_off_card_device "$parent_disk"
+    fi
 }
 
 get_current_user() {
@@ -209,16 +387,39 @@ path_has_beecam_data() {
     [[ -e "$path/images_and_labels" || -e "$path/logs" || -e "$path/configs" || -e "$path/hostname" ]]
 }
 
+rerun_with_sudo_for_rootfs_access() {
+    local source_path="$1"
+
+    [[ "$(id -u)" -ne 0 ]] || return 0
+    [[ -d "${source_path}/home/pi" ]] || return 0
+    [[ ! -x "${source_path}/home/pi" || ! -r "${source_path}/home/pi" ]] || return 0
+
+    command -v sudo >/dev/null 2>&1 || die "Rootfs card is mounted, but ${source_path}/home/pi is not readable by this user and sudo is not available."
+
+    echo ""
+    echo "Rootfs card found at ${source_path}, but ${source_path}/home/pi is not readable by this user."
+    echo "Re-running with sudo so the script can read /home/pi/data and clean root-owned files."
+    if [[ ${#ORIGINAL_ARGS[@]} -eq 0 ]]; then
+        exec sudo bash "$SCRIPT_PATH" "$source_path" "$DEFAULT_DEST"
+    fi
+    exec sudo bash "$SCRIPT_PATH" "${ORIGINAL_ARGS[@]}"
+}
+
 add_candidate() {
     local kind="$1"
     local mount_path="$2"
     local data_path="$3"
+    local candidate existing
     [[ -d "$mount_path" && -d "$data_path" ]] || return 0
     path_is_mountpoint "$mount_path" || return 0
     if [[ "$kind" != "DATA" ]]; then
         path_has_beecam_data "$data_path" || return 0
     fi
-    SOURCE_CANDIDATES+=("${kind}|${mount_path}|${data_path}")
+    candidate="${kind}|${mount_path}|${data_path}"
+    for existing in "${SOURCE_CANDIDATES[@]}"; do
+        [[ "$existing" == "$candidate" ]] && return 0
+    done
+    SOURCE_CANDIDATES+=("$candidate")
 }
 
 detect_default_dest() {
@@ -240,6 +441,30 @@ detect_default_dest() {
     done
 
     printf '%s\n' "/media/${current_user}/T7 Shield"
+}
+
+auto_mount_removable_partitions() {
+    local device type removable mountpoint mounted_any
+
+    command -v lsblk >/dev/null 2>&1 || return 0
+    command -v udisksctl >/dev/null 2>&1 || return 0
+
+    mounted_any=false
+    while read -r device type removable mountpoint; do
+        [[ "$type" == "part" && "$removable" == "1" ]] || continue
+        [[ -z "${mountpoint:-}" ]] || continue
+
+        echo "Trying to mount removable partition: $device"
+        if udisksctl mount -b "$device" >/dev/null 2>&1; then
+            mounted_any=true
+        else
+            echo "  Warning: could not auto-mount $device"
+        fi
+    done < <(lsblk -nrpo NAME,TYPE,RM,MOUNTPOINT 2>/dev/null)
+
+    if $mounted_any; then
+        echo "Auto-mount complete; rescanning BeeCam source candidates..."
+    fi
 }
 
 choose_candidate() {
@@ -264,7 +489,19 @@ choose_candidate() {
 }
 
 auto_detect_source() {
-    local base path
+    local base path children
+
+    SOURCE_CANDIDATES=()
+    for base in "${MEDIA_ROOTS[@]}"; do
+        for path in "${base}/DATA" "${base}/data"; do
+            add_candidate "DATA" "$path" "$path"
+        done
+    done
+    if choose_candidate "DATA"; then
+        return
+    fi
+
+    auto_mount_removable_partitions
 
     SOURCE_CANDIDATES=()
     for base in "${MEDIA_ROOTS[@]}"; do
@@ -278,7 +515,14 @@ auto_detect_source() {
 
     SOURCE_CANDIDATES=()
     for base in "${MEDIA_ROOTS[@]}"; do
-        for path in "${base}/rootfs" "${base}/ROOTFS"; do
+        [[ -d "$base" ]] || continue
+        shopt -s nullglob
+        children=("${base}"/*)
+        shopt -u nullglob
+        for path in "${children[@]}"; do
+            if path_is_mountpoint "$path"; then
+                rerun_with_sudo_for_rootfs_access "$path"
+            fi
             add_candidate "rootfs" "$path" "${path}/home/pi/data"
         done
     done
@@ -286,7 +530,7 @@ auto_detect_source() {
         return
     fi
 
-    die "Could not find a mounted BeeCam DATA partition or rootfs under /media/wlab, /media/nate, or /media/field3."
+    die "Could not find a mounted BeeCam DATA partition or rootfs. Checked mounted directories under /media/wlab, /media/nate, and /media/field3; expected either DATA or <mount>/home/pi/data with BeeCam data markers."
 }
 
 resolve_explicit_source() {
@@ -315,6 +559,8 @@ resolve_explicit_source() {
         DATA_SRC="$source_path"
         return
     fi
+
+    rerun_with_sudo_for_rootfs_access "$source_path"
 
     if [[ -d "${source_path}/home/pi/data" ]]; then
         SOURCE_KIND="rootfs"
@@ -350,6 +596,8 @@ DEST="${DEST%/}"
 [[ -d "$DEST" ]] || die "Destination path does not exist: $DEST"
 
 SOURCE_DEVICE=$(get_mount_source "$SOURCE_MOUNT" 2>/dev/null || true)
+set_data_owner
+ensure_source_writable
 
 for cmd in zip; do
     command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' is required but not found."
@@ -453,6 +701,8 @@ case "$confirm" in
 esac
 echo ""
 
+preflight_cleanup_sudo
+
 cd "$DATA_SRC"
 
 if $HAS_PV; then
@@ -468,6 +718,7 @@ else
     zip -0 -rq "$DEST_ZIP" "${INCLUDE[@]}" \
         -x "*.DS_Store" -x "__MACOSX*"
 fi
+maybe_chown_archive "$DEST_ZIP"
 
 echo ""
 echo "Archive command completed; skipping zip integrity verification."
@@ -478,20 +729,18 @@ print_disk_usage "Before cleanup" "$SOURCE_MOUNT"
 
 for d in images_and_labels logs; do
     if [[ -d "$DATA_SRC/$d" ]]; then
-        rm -rf "${DATA_SRC:?}/$d"
-        echo "  Cleared: $d/"
+        remove_data_path "$DATA_SRC/$d" "$d/" "Cleared"
     fi
 done
-mkdir -p "$DATA_SRC/images_and_labels" "$DATA_SRC/logs"
+ensure_empty_data_dir "$DATA_SRC/images_and_labels" "images_and_labels/"
+ensure_empty_data_dir "$DATA_SRC/logs" "logs/"
 
 if [[ -d "$DATA_SRC/update_backups" ]]; then
-    rm -rf "${DATA_SRC:?}/update_backups"
-    echo "  Deleted: update_backups/"
+    remove_data_path "$DATA_SRC/update_backups" "update_backups/"
 fi
 
 while IFS= read -r trash_dir; do
-    rm -rf "$trash_dir"
-    echo "  Deleted: $(basename "$trash_dir")/"
+    remove_data_path "$trash_dir" "$(basename "$trash_dir")/"
 done < <(find "$DATA_SRC" -mindepth 1 -maxdepth 1 -type d -name '.Trash-*' -print 2>/dev/null)
 
 for d in images_and_labels logs; do

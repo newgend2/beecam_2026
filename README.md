@@ -64,9 +64,13 @@ PC/laptop, mount the SD card partitions, and run:
 
 The transfer script auto-detects cards mounted under `/media/wlab`,
 `/media/nate`, or `/media/field3`. If a mounted `DATA` partition exists, it uses
-that old exFAT data layout. Otherwise it looks for the current rootfs layout at
-`rootfs/home/pi/data`. If multiple candidate cards are mounted, pass the source
-and destination explicitly:
+that old exFAT data layout. Otherwise it scans mounted directories directly
+under those media roots and uses any rootfs-like mount containing
+`home/pi/data` with BeeCam data markers. If multiple candidate cards are
+mounted, pass the source and destination explicitly. If removable card
+partitions are present but not mounted, the script tries to mount them with
+`udisksctl`; if the source is mounted read-only, it tries to remount it
+read-write before archiving and cleanup.
 
 ```bash
 ./transfer_beecam.sh /media/user/rootfs /media/user/BackupSSD
@@ -75,7 +79,9 @@ and destination explicitly:
 
 It archives the data contents with store-only zip, cleans transferred
 capture/log/update data after the zip command completes, flushes writes, and
-unmounts all mounted SD card partitions from that card.
+unmounts all mounted SD card partitions from that card. When supported by the
+desktop storage stack, it also powers off/ejects the SD card device after
+unmounting.
 
 ## Services
 
