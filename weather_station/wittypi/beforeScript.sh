@@ -14,6 +14,7 @@ CONFIG_FILE="/home/pi/data/configs/schedule.conf"
 SCHEDULE_FILE="/home/pi/wittypi/schedule.wpi"
 GENERATOR="/home/pi/weather_station/schedule/generate_wittypi_schedule.py"
 WITTYPI_UTILS="/home/pi/wittypi/utilities.sh"
+I2C_CONF_POWER_ON_WHEN_POWER_CONNECTED=17
 
 read_config_value() {
     local key="$1"
@@ -35,24 +36,10 @@ read_config_value() {
 }
 
 apply_wittypi_power_settings() {
-    local dummy_load before after
+    local dummy_load power_on_return before after
 
     dummy_load="$(read_config_value "WITTYPI_DUMMY_LOAD_DURATION")"
-    if [[ -z "$dummy_load" ]]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: no Witty Pi dummy-load setting in ${CONFIG_FILE}; leaving unchanged"
-        return 0
-    fi
-
-    case "${dummy_load,,}" in
-        disabled|disable|off|none)
-            dummy_load=0
-            ;;
-    esac
-
-    if ! [[ "$dummy_load" =~ ^[0-9]+$ ]] || (( dummy_load > 255 )); then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: invalid WITTYPI_DUMMY_LOAD_DURATION=${dummy_load}; expected 0-255"
-        return 0
-    fi
+    power_on_return="$(read_config_value "WITTYPI_POWER_ON_WHEN_POWER_CONNECTED")"
 
     if [[ ! -r "$WITTYPI_UTILS" ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: missing ${WITTYPI_UTILS}; cannot apply Witty Pi power settings"
@@ -62,13 +49,51 @@ apply_wittypi_power_settings() {
     # shellcheck disable=SC1090
     . "$WITTYPI_UTILS"
 
-    set +e
-    before="$(i2c_read "$I2C_BUS" "$I2C_MC_ADDRESS" "$I2C_CONF_DUMMY_LOAD" 2>/dev/null)"
-    i2c_write "$I2C_BUS" "$I2C_MC_ADDRESS" "$I2C_CONF_DUMMY_LOAD" "$dummy_load"
-    after="$(i2c_read "$I2C_BUS" "$I2C_MC_ADDRESS" "$I2C_CONF_DUMMY_LOAD" 2>/dev/null)"
-    set -e
+    if [[ -z "$dummy_load" ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: no Witty Pi dummy-load setting in ${CONFIG_FILE}; leaving unchanged"
+    else
+        case "${dummy_load,,}" in
+            disabled|disable|off|none)
+                dummy_load=0
+                ;;
+        esac
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: Witty Pi dummy-load duration ${before:-unknown} -> ${after:-unknown} (requested ${dummy_load})"
+        if ! [[ "$dummy_load" =~ ^[0-9]+$ ]] || (( dummy_load > 255 )); then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: invalid WITTYPI_DUMMY_LOAD_DURATION=${dummy_load}; expected 0-255"
+        else
+            set +e
+            before="$(i2c_read "$I2C_BUS" "$I2C_MC_ADDRESS" "$I2C_CONF_DUMMY_LOAD" 2>/dev/null)"
+            i2c_write "$I2C_BUS" "$I2C_MC_ADDRESS" "$I2C_CONF_DUMMY_LOAD" "$dummy_load"
+            after="$(i2c_read "$I2C_BUS" "$I2C_MC_ADDRESS" "$I2C_CONF_DUMMY_LOAD" 2>/dev/null)"
+            set -e
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: Witty Pi dummy-load duration ${before:-unknown} -> ${after:-unknown} (requested ${dummy_load})"
+        fi
+    fi
+
+    if [[ -z "$power_on_return" ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: no Witty Pi power-on-return setting in ${CONFIG_FILE}; leaving unchanged"
+        return 0
+    fi
+
+    case "${power_on_return,,}" in
+        1|true|yes|on|enabled|enable)
+            power_on_return=1
+            ;;
+        0|false|no|off|disabled|disable)
+            power_on_return=0
+            ;;
+        *)
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: invalid WITTYPI_POWER_ON_WHEN_POWER_CONNECTED=${power_on_return}; expected 0/1"
+            return 0
+            ;;
+    esac
+
+    set +e
+    before="$(i2c_read "$I2C_BUS" "$I2C_MC_ADDRESS" "$I2C_CONF_POWER_ON_WHEN_POWER_CONNECTED" 2>/dev/null)"
+    i2c_write "$I2C_BUS" "$I2C_MC_ADDRESS" "$I2C_CONF_POWER_ON_WHEN_POWER_CONNECTED" "$power_on_return"
+    after="$(i2c_read "$I2C_BUS" "$I2C_MC_ADDRESS" "$I2C_CONF_POWER_ON_WHEN_POWER_CONNECTED" 2>/dev/null)"
+    set -e
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: Witty Pi power-on-5V-return ${before:-unknown} -> ${after:-unknown} (requested ${power_on_return})"
 }
 
 mkdir -p "$(dirname "$LOGFILE")"

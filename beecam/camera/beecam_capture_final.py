@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from libcamera import controls
 from picamera2 import Picamera2
@@ -473,6 +473,58 @@ def shorten_schedule_time(dt_str: str) -> str:
         return "??:??"
 
 
+def parse_schedule_timestamp(line: str) -> datetime | None:
+    parts = line.split(maxsplit=2)
+    if len(parts) < 3:
+        return None
+    try:
+        return datetime.strptime(parts[1] + " " + parts[2], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+def parse_schedule_duration_seconds(text: str) -> int | None:
+    total = 0
+    found = False
+    for unit, value in re.findall(r"\b([DHMS])([0-9]+)\b", text):
+        found = True
+        amount = int(value)
+        if unit == "D":
+            total += amount * 86400
+        elif unit == "H":
+            total += amount * 3600
+        elif unit == "M":
+            total += amount * 60
+        elif unit == "S":
+            total += amount
+    return total if found else None
+
+
+def schedule_datetimes_from_states(begin: datetime | None, states: list[tuple[str, int]]) -> tuple[str | None, str | None]:
+    if begin is None or not states:
+        return None, None
+
+    cursor = begin
+    startup = None
+    shutdown = None
+
+    for state, duration_sec in states:
+        next_cursor = cursor + timedelta(seconds=duration_sec)
+        if state == "ON" and shutdown is None:
+            startup = startup or cursor
+            shutdown = next_cursor
+        elif state == "OFF" and startup is None:
+            startup = next_cursor
+
+        if startup is not None and shutdown is not None:
+            break
+        cursor = next_cursor
+
+    startup_str = startup.strftime("%Y-%m-%d %H:%M:%S") if startup else None
+    shutdown_str = shutdown.strftime("%Y-%m-%d %H:%M:%S") if shutdown else None
+    return startup_str, shutdown_str
+
+
 def parse_schedule_wpi(path: str):
     if not os.path.exists(path):
         return {
@@ -484,8 +536,11 @@ def parse_schedule_wpi(path: str):
 
     startup = None
     shutdown = None
+    begin = None
+    states = []
     startup_re = re.compile(r"^#\s*Startup at:\s*(.+?)\s*$")
     shutdown_re = re.compile(r"^#\s*Shutdown at:\s*(.+?)\s*$")
+    state_re = re.compile(r"^(ON|OFF)\s+(.+?)\s*$")
 
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -498,6 +553,17 @@ def parse_schedule_wpi(path: str):
                 if m:
                     shutdown = m.group(1)
                     continue
+                content = line.split("#", 1)[0].strip()
+                if not content:
+                    continue
+                if content.startswith("BEGIN"):
+                    begin = parse_schedule_timestamp(content)
+                    continue
+                m = state_re.match(content)
+                if m:
+                    duration_sec = parse_schedule_duration_seconds(m.group(2))
+                    if duration_sec is not None:
+                        states.append((m.group(1), duration_sec))
     except Exception:
         return {
             "ok": False,
@@ -505,6 +571,9 @@ def parse_schedule_wpi(path: str):
             "shutdown_short": "--:--",
             "message": "Schedule read error",
         }
+
+    if not startup and not shutdown:
+        startup, shutdown = schedule_datetimes_from_states(begin, states)
 
     if not startup and not shutdown:
         return {

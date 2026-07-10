@@ -111,9 +111,10 @@ Important preserved behavior:
   `/home/pi/data` before running the runtime update.
 - `scripts/beecam-update-runtime.sh` backs up runtime files to
   `/home/pi/data/update_backups/...` using normal `cp`/`cp -r` copies.
-- The runtime updater overwrites only
-  `/home/pi/data/configs/camera_config_final.ini`, not the whole configs
-  directory and not `schedule.conf`.
+- The runtime updater intentionally replaces the whole
+  `/home/pi/data/configs` directory from the repo `configs/` directory,
+  including `schedule.conf`. This makes `offline_update.sh` the field mechanism
+  for pushing current functional camera configs and Witty Pi scheduling changes.
 - The runtime updater should leave only production camera Python files deployed
   on the Pi: `beecam_capture_final.py` and `beecam_preview.py`, plus needed
   non-Python assets such as `packerout`.

@@ -156,9 +156,23 @@ production camera Python scripts (`beecam_capture_final.py` and
 repo `configs/` directory, updates
 `/usr/local/sbin/beecam-init-data.sh`, replaces the BeeCam Witty Pi scripts under
 `/home/pi/wittypi`, and installs the repo BeeCam service files under
-`/etc/systemd/system`.
+`/etc/systemd/system`. It also runs the updated Witty Pi `beforeScript.sh` and
+`runScript.sh` once, so power-on-5V-return and the current schedule are applied
+during the offline update rather than waiting for the next Witty-managed boot.
 
 ## Witty Pi Power-Cut Test
+
+BeeCam defaults to a fixed Witty Pi schedule for the current solar power
+workaround: `07:00` startup and `19:00` shutdown. During normal operating hours
+the generated Witty Pi schedule repeats this daily window for a long horizon.
+If the Pi boots outside operating hours because 5V returned after a
+battery/regulator cutout, it stays on only for
+`AFTER_HOURS_SHUTDOWN_DELAY_MIN`, arms the next startup, then shuts down again.
+
+The default config also sets `WITTYPI_POWER_ON_WHEN_POWER_CONNECTED=1`, which
+maps to Witty Pi register 17. This makes Witty Pi boot the Pi when 5V returns
+from the regulator; it is the main recovery path when a scheduled startup was
+missed because upstream power was absent.
 
 To test whether a Witty Pi schedule survives an upstream power interruption,
 first update the camera so this repo exists at `/home/pi/setup`, then SSH to the

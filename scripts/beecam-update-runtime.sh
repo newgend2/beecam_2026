@@ -34,6 +34,7 @@ Updates only runtime files:
   - /home/pi/data/configs, replaced from this repo
   - /usr/local/sbin/beecam-init-data.sh
   - /home/pi/wittypi BeeCam scripts
+  - Witty Pi power settings and schedule, applied immediately after install
   - /etc/systemd/system BeeCam service files
 
 It does not install apt packages, Witty Pi, boot files, or partition anything.
@@ -213,6 +214,10 @@ for service in "${SERVICE_FILES[@]}"; do
         sudo systemctl enable "$service_name"
     fi
 done
+
+log "Applying Witty Pi power settings and arming updated schedule"
+sudo "${WITTYPI_DIR}/beforeScript.sh"
+sudo "${WITTYPI_DIR}/runScript.sh"
 
 if [[ "$RESTART_MODE" == "yes" || ( "$RESTART_MODE" == "auto" && "$SERVICE_WAS_ACTIVE" == "true" ) ]]; then
     log "Starting beecam.service"
