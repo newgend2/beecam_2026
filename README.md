@@ -1,216 +1,92 @@
-# BeeCam Setup
+# BeeCam
 
-This is a scripted provisioning repo, not a pure golden-image workflow. Start
-from a fresh Raspberry Pi OS card, clone this repo, and run the installer on the
-Pi. BeeCam stores configs, captures, logs, host metadata, and update backups on
-the root filesystem under:
+Solar-powered Pi Zero 2W insect camera (Witty Pi 4 Mini, DS3231 RTC, OLED, IMX500 AI camera).
+All runtime data lives on the root filesystem under `/home/pi/data`.
 
-```bash
-/home/pi/data
-```
+---
 
-There is no separate removable data partition in the current fresh-card workflow.
+## 1. Install (fresh Raspberry Pi OS card)
 
-## Quick Start
-
-On a fresh Raspberry Pi, paste this from the default `/home/pi` directory. The
-current rootfs-data workflow lives on the `feature/no-exfat-data` branch:
+From `/home/pi` on the Pi, paste one line:
 
 ```bash
-sudo apt update && sudo apt install -y git && git clone --branch feature/no-exfat-data --single-branch https://github.com/newgend2/beecam_2026.git setup && cd setup && chmod +x beecam_install.sh scripts/beecam-init-data.sh && ./beecam_install.sh --skip-apt-update
+sudo apt update && sudo apt install -y git && git clone --branch feature/no-exfat-data --single-branch https://github.com/newgend2/beecam_2026.git setup && cd setup && chmod +x beecam_install.sh scripts/*.sh && ./beecam_install.sh --skip-apt-update
 ```
 
-If the repo has already been cloned, rerun the installer with:
+Reinstall / re-run later:
 
 ```bash
-cd ~/setup && git pull --ff-only && chmod +x beecam_install.sh scripts/beecam-init-data.sh && ./beecam_install.sh
+cd ~/setup && git pull --ff-only && ./beecam_install.sh
 ```
 
-The installer:
+- Add `--full-upgrade` for a full OS refresh (slow). Use `--skip-apt-update` only if you just ran `sudo apt update`.
+- Installs apt/pip packages, Witty Pi, BeeCam code, boot config, and systemd services.
+- **Reboot after install** for boot-config (CMA) changes to take effect.
 
-- installs the BeeCam data directory initializer
-- creates `/home/pi/data/configs`, `/home/pi/data/logs`, and `/home/pi/data/images_and_labels`
-- seeds configs from this repo only when `/home/pi/data/configs` does not already exist
-- installs apt packages without running a full OS upgrade by default
-- installs `astral` and `adafruit-circuitpython-ssd1306` into system Python with `--break-system-packages`
-- installs Witty Pi software
-- replaces Witty Pi scripts with the repo versions
-- copies BeeCam code into `/home/pi/beecam`
-- updates `/boot/firmware/cmdline.txt`
-- replaces `/boot/firmware/config.txt`, disabling Wi-Fi, Bluetooth, and audio while preserving HDMI/framebuffer support
-- installs systemd services
+---
 
-The source folders inside `/home/pi/setup` remain there after installation. The
-installer also copies BeeCam runtime files to `/home/pi/beecam` and Witty Pi
-scripts to `/home/pi/wittypi`.
+## 2. Operation (automatic)
 
-For a slower full OS refresh, run the installer with:
+- Witty Pi runs a fixed daily schedule: **on 07:00, off 19:00** (`/home/pi/data/configs/schedule.conf`).
+- On boot, Witty Pi regenerates the schedule, starts `beecam.service`, and the camera images on insect detection (full-res JPEGs to `/home/pi/data/images_and_labels/<date>/images/`).
+- If power returns off-hours, the Pi runs briefly, re-arms the next start, and shuts down.
+- OLED shows host, next on/off, image count, and SD %.
+- Capture stops automatically at 97% disk full.
+
+No manual start needed — Witty Pi controls power and the service.
+
+---
+
+## 3. Update a deployed camera
+
+From a field laptop with this repo, on the same Ethernet network:
 
 ```bash
-./beecam_install.sh --full-upgrade
+./offline_update.sh cam7          # use the camera hostname
 ```
 
-Use `--skip-apt-update` only when `sudo apt update` was already run immediately
-before the installer.
+Pushes code, configs, Witty Pi scripts, services, and boot config over SSH, then **auto-reboots** the camera. No internet needed on the camera.
 
-## Data Transfer
-
-To transfer data, shut the Pi down cleanly, insert the SD card into a Linux
-PC/laptop, mount the SD card partitions, and run:
+Already on the camera (`~/setup` up to date)?
 
 ```bash
-./transfer_beecam.sh
+cd ~/setup && scripts/beecam-update-runtime.sh --restart
 ```
 
-The transfer script auto-detects cards mounted under `/media/wlab`,
-`/media/nate`, or `/media/field3`. If a mounted `DATA` partition exists, it uses
-that old exFAT data layout. Otherwise it scans mounted directories directly
-under those media roots and uses any rootfs-like mount containing
-`home/pi/data` with BeeCam data markers. If multiple candidate cards are
-mounted, pass the source and destination explicitly. If removable card
-partitions are present but not mounted, the script tries to mount them with
-`udisksctl`; if the source is mounted read-only, it tries to remount it
-read-write before archiving and cleanup.
+Previous runtime files are backed up to `/home/pi/data/update_backups/` before replacement.
+
+---
+
+## 4. Transfer data off a card
+
+Shut the Pi down, move the SD card to a Linux PC, mount it, then:
 
 ```bash
-./transfer_beecam.sh /media/user/rootfs /media/user/BackupSSD
-./transfer_beecam.sh /media/user/DATA /media/user/BackupSSD
+./transfer_beecam.sh                                  # auto-detect card
+./transfer_beecam.sh /media/user/rootfs /media/backup # explicit source + dest
 ```
 
-It archives the data contents with store-only zip, cleans transferred
-capture/log/update data after the zip command completes, flushes writes, and
-unmounts all mounted SD card partitions from that card. When supported by the
-desktop storage stack, it also powers off/ejects the SD card device after
-unmounting.
+- Auto-detects cards under `/media/wlab`, `/media/nate`, `/media/field3`.
+- Writes `HOST_DATERANGE_YYYY-MM-DD-HH-MM-SS.zip` to the destination, then clears transferred data, flushes, and unmounts the card.
+- Run with `sudo` if it reports permission errors (ext4 root-owned files).
 
-## Services
+---
 
-`beecam.service` is installed but intentionally not enabled. Witty Pi starts it
-from `wittypi/afterStartup.sh` and stops it from `wittypi/beforeShutdown.sh`.
+## Key paths
 
-All other service files in `systemd_services/` are enabled by the installer,
-including `beecam-oled-boot.service`. The OLED boot service is a short oneshot:
-it shows an early splash only when `[oled] enabled = true` in
-`/home/pi/data/configs/camera_config_final.ini`, then exits. Live OLED updates
-still come from `beecam_capture_final.py`.
-
-Wi-Fi is disabled in the BeeCam boot config to save power. Use Ethernet for SSH
-and NTP time sync. Time initialization skips the NTP wait when no wired Ethernet
-link is detected.
-
-## Capture And Storage
-
-Production model capture runs a high-resolution `main` stream and a low-res
-`lores` stream in the same Picamera2 request. Detections and stale matching use
-the `lores` stream coordinates, while saved JPEGs come from the high-resolution
-`main` buffer from the same completed request. The low-power switch/burst mode
-was removed because the mode-switch delay could miss fast insects.
-
-Production capture saves JPEG images only. The directory name
-`images_and_labels` is retained for compatibility with transfer workflows, but
-no label `.txt` files are produced.
-
-The OLED `SD` percentage shows BeeCam data size under `/home/pi/data` as a
-percentage of the SD card/root filesystem capacity. A separate internal rootfs
-fullness guard still stops capture if non-BeeCam data fills the card.
-
-## Logging And Debugging
-
-By default, normal `journalctl -u beecam.service` output is quiet and records
-image-save messages during capture. Stale-detection logs, FPS logs, queue timing
-logs, and startup/config logs are opt-in under the `[debug]` section of
-`camera_config_final.ini`.
-
-HDMI/framebuffer preview debugging remains available through
-`beecam_preview.py`, with DRM preview as the default and `--preview-backend` for
-overrides.
-
-## Field Runtime Updates
-
-For cameras that can be reached over Ethernet from a field laptop with this repo
-checked out locally, update BeeCam runtime scripts, model assets, Witty Pi
-scripts, service files, and configs with:
-
-```bash
-./offline_update.sh cam7
-```
-
-The offline updater does not require internet on the camera. It rsyncs this repo
-to `/home/pi/setup`, verifies the rootfs data folders under `/home/pi/data`, and
-runs the camera-side runtime updater over SSH.
-
-If you are already on the camera and `/home/pi/setup` already contains the
-updated repo, you can run the camera-side updater directly:
-
-```bash
-cd ~/setup
-chmod +x scripts/beecam-update-runtime.sh
-scripts/beecam-update-runtime.sh --restart
-```
-
-The updater backs up the current runtime files under
-`/home/pi/data/update_backups/` before replacing them. It deploys only the
-production camera Python scripts (`beecam_capture_final.py` and
-`beecam_preview.py`) to `/home/pi/beecam/camera`, replaces model assets under
-`/home/pi/beecam/camera/packerout`, replaces `/home/pi/data/configs` from the
-repo `configs/` directory, updates
-`/usr/local/sbin/beecam-init-data.sh`, replaces the BeeCam Witty Pi scripts under
-`/home/pi/wittypi`, and installs the repo BeeCam service files under
-`/etc/systemd/system`. It also runs the updated Witty Pi `beforeScript.sh` and
-`runScript.sh` once, so power-on-5V-return and the current schedule are applied
-during the offline update rather than waiting for the next Witty-managed boot.
-
-## Witty Pi Power-Cut Test
-
-BeeCam defaults to a fixed Witty Pi schedule for the current solar power
-workaround: `07:00` startup and `19:00` shutdown. During normal operating hours
-the generated Witty Pi schedule repeats this daily window for a long horizon.
-If the Pi boots outside operating hours because 5V returned after a
-battery/regulator cutout, it stays on only for
-`AFTER_HOURS_SHUTDOWN_DELAY_MIN`, arms the next startup, then shuts down again.
-
-The default config also sets `WITTYPI_POWER_ON_WHEN_POWER_CONNECTED=1`, which
-maps to Witty Pi register 17. This makes Witty Pi boot the Pi when 5V returns
-from the regulator; it is the main recovery path when a scheduled startup was
-missed because upstream power was absent.
-
-To test whether a Witty Pi schedule survives an upstream power interruption,
-first update the camera so this repo exists at `/home/pi/setup`, then SSH to the
-camera and run:
-
-```bash
-cd ~/setup
-sudo scripts/wittypi-powercut-test.sh --shutdown-delay-sec 180 --off-duration-sec 300
-```
-
-The helper backs up `/home/pi/wittypi/schedule.wpi`, writes a short test
-schedule, and runs Witty Pi's normal `runScript.sh` to arm the shutdown and
-startup alarms. Let Witty Pi shut the Pi down, cut upstream power to the Witty
-Pi/regulator during the OFF interval, then restore upstream power before the
-printed startup time. The expected result is that the Pi stays off until the
-scheduled startup time, then boots.
-
-Normal BeeCam scheduling is regenerated on the next Witty Pi-managed boot. To
-cancel the test before shutdown and re-arm the previous schedule, run:
-
-```bash
-sudo scripts/wittypi-powercut-test.sh --restore
-```
+| What | Where |
+|------|-------|
+| Data (captures, logs, configs) | `/home/pi/data` |
+| Camera config | `/home/pi/data/configs/camera_config_final.ini` |
+| Schedule config | `/home/pi/data/configs/schedule.conf` |
+| BeeCam code | `/home/pi/beecam` |
+| Witty Pi scripts | `/home/pi/wittypi` |
+| Services | `/etc/systemd/system` |
+| Logs | `journalctl -u beecam.service` |
 
 ## Troubleshooting
 
-Systemd service files are installed to:
-
-```bash
-/etc/systemd/system
-```
-
-If the installer stops early, rerun it and look for a line like:
-
-```bash
-ERROR: install failed at line ...
-```
-
-The installer is intentionally fail-fast, so if Witty Pi installation fails,
-later steps such as copying `/home/pi/beecam`, updating boot files, and
-installing services will not run.
+- **Install stopped early:** it's fail-fast — rerun and look for `ERROR: install failed at line ...`.
+- **Camera won't image:** check `journalctl -u beecam.service`; confirm the schedule window and that the disk isn't full.
+- **Wi-Fi/Bluetooth are off** (power saving) — use Ethernet for SSH and NTP.
+- **Verify power-cut recovery:** `sudo scripts/wittypi-powercut-test.sh --shutdown-delay-sec 180 --off-duration-sec 300` (restore with `--restore`).
