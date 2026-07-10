@@ -23,7 +23,10 @@ display_auto_detect=1
 auto_initramfs=1
 
 # Enable DRM VC4 V3D driver
-dtoverlay=vc4-kms-v3d
+# cma-256 sizes the contiguous-memory pool the camera allocates full-res buffers from
+# (libcamera/picamera2 use linux,cma). Without it the default pool is exhausted by the
+# full-res preview plus HDMI framebuffers and USB DMA, causing "Cannot allocate memory".
+dtoverlay=vc4-kms-v3d,cma-256
 max_framebuffers=2
 
 # Don't have the firmware create an initial video= setting in cmdline.txt.

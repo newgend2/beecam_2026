@@ -8,6 +8,7 @@ DATA_ROOT="${PI_HOME}/data"
 DATA_CONFIG_DIR="${DATA_ROOT}/configs"
 DATA_INIT="/usr/local/sbin/beecam-init-data.sh"
 VIDEO_ARG="video=HDMI-A-1:800x480@60D"
+COHERENT_POOL_ARG="coherent_pool=2M"
 RUN_APT_UPDATE="${BEECAM_APT_UPDATE:-1}"
 RUN_FULL_UPGRADE="${BEECAM_FULL_UPGRADE:-0}"
 
@@ -192,6 +193,14 @@ install_boot_files() {
 
     if ! grep -Fq "$VIDEO_ARG" "${boot_dir}/cmdline.txt"; then
         sudo sed -i "1 s/$/ ${VIDEO_ARG}/" "${boot_dir}/cmdline.txt"
+    fi
+
+    # Enlarge the atomic DMA-coherent pool used by USB/network drivers. Prevents
+    # "Cannot allocate memory" when peripherals (USB ethernet) are attached alongside
+    # the camera. Appended idempotently; cmdline.txt is never wholesale-replaced because
+    # it carries the card-specific root=PARTUUID.
+    if ! grep -Fq "$COHERENT_POOL_ARG" "${boot_dir}/cmdline.txt"; then
+        sudo sed -i "1 s/$/ ${COHERENT_POOL_ARG}/" "${boot_dir}/cmdline.txt"
     fi
 
     sudo install -m 0644 "${SCRIPT_DIR}/boot_firmware/config.txt" "${boot_dir}/config.txt"

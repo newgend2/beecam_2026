@@ -17,7 +17,9 @@ Usage:
 Options:
   -h, --help               Show this help.
 
-This update replaces BeeCam runtime scripts, model assets, service files, and /home/pi/data/configs from this repo.
+This update replaces BeeCam runtime scripts, model assets, service files, /home/pi/data/configs,
+and /boot/firmware config.txt/cmdline.txt (CMA + coherent_pool) from this repo. Boot-config
+changes take effect on the next reboot / Witty Pi power cycle.
 USAGE
 }
 
@@ -99,6 +101,7 @@ echo "Camera: ${REMOTE}"
 echo "Source: ${SCRIPT_DIR}/"
 echo "Target: ${REMOTE}:${REMOTE_SETUP}/"
 echo "Configs: will replace ${REMOTE_DATA_ROOT}/configs from this repo"
+echo "Boot:    will apply config.txt (CMA) + cmdline.txt (coherent_pool); reboot / Witty Pi cycle to take effect"
 echo
 read -r -p "Proceed with offline update? [y/N] " confirm
 case "$confirm" in

@@ -12,6 +12,8 @@ SERVICE_DIR="/etc/systemd/system"
 DATA_INIT="/usr/local/sbin/beecam-init-data.sh"
 WITTYPI_DIR="${PI_HOME}/wittypi"
 CAPTURE_SCRIPT="beecam_capture_final.py"
+REPO_BOOT_DIR="${REPO_DIR}/boot_firmware"
+BOOT_APPLY_SCRIPT="${SCRIPT_DIR}/beecam-apply-boot-config.sh"
 DO_GIT_PULL=false
 RESTART_MODE="auto"
 
@@ -36,8 +38,10 @@ Updates only runtime files:
   - /home/pi/wittypi BeeCam scripts
   - Witty Pi power settings and schedule, applied immediately after install
   - /etc/systemd/system BeeCam service files
+  - /boot/firmware config.txt (CMA) and cmdline.txt (coherent_pool); takes effect
+    on the next reboot / Witty Pi power cycle
 
-It does not install apt packages, Witty Pi, boot files, or partition anything.
+It does not install apt packages, Witty Pi, or partition anything.
 USAGE
 }
 
@@ -111,6 +115,8 @@ require_file "${REPO_DIR}/beecam/oled_boot_splash.py"
 require_file "${REPO_DIR}/beecam/camera/packerout"
 require_file "${REPO_DIR}/configs"
 require_file "${REPO_DIR}/scripts/beecam-init-data.sh"
+require_file "${REPO_BOOT_DIR}/config.txt"
+require_file "$BOOT_APPLY_SCRIPT"
 for script in beforeScript.sh afterStartup.sh runScript.sh beforeShutdown.sh; do
     require_file "${REPO_DIR}/wittypi/${script}"
 done
@@ -215,6 +221,10 @@ for service in "${SERVICE_FILES[@]}"; do
     fi
 done
 
+log "Updating boot firmware (CMA / coherent_pool)"
+sudo install -m 0755 "$BOOT_APPLY_SCRIPT" /usr/local/sbin/beecam-apply-boot-config.sh
+sudo /usr/local/sbin/beecam-apply-boot-config.sh "$REPO_BOOT_DIR" "${BACKUP_ROOT}/boot"
+
 log "Applying Witty Pi power settings and arming updated schedule"
 sudo "${WITTYPI_DIR}/beforeScript.sh"
 sudo "${WITTYPI_DIR}/runScript.sh"
@@ -233,3 +243,4 @@ echo "  Capture script: ${CAPTURE_SCRIPT}"
 echo "  Configs:        ${DATA_CONFIG_DIR}"
 echo "  Backup:         ${BACKUP_ROOT}"
 echo "  Service:        $(systemctl is-active beecam.service || true)"
+echo "  Boot config:    CMA/coherent_pool applied; takes effect on next reboot / Witty Pi power cycle"
