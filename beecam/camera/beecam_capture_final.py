@@ -60,6 +60,10 @@ last_stale_suppression_log = 0.0
 
 hostname = socket.gethostname()
 DATA_ROOT = "/home/pi/data"
+
+# Monotonic timestamp captured when this process image started. Reset on every
+# os.execv restart, so it measures how long the current run survived before failing.
+PROCESS_START_MONOTONIC = time.monotonic()
 cached_images_root = None
 cached_images_day = None
 cached_images_dir = None
@@ -123,6 +127,8 @@ class AppConfig:
 
     restart_on_exception: bool
     restart_delay_sec: float
+    restart_backoff_max_sec: float
+    restart_healthy_runtime_sec: float
     exception_log_path: str
 
 
@@ -288,6 +294,8 @@ def read_config(config_path: str) -> AppConfig:
 
         restart_on_exception=getbool("service", "restart_on_exception", fallback=True),
         restart_delay_sec=getfloat("service", "restart_delay_sec", fallback=2.0),
+        restart_backoff_max_sec=getfloat("service", "restart_backoff_max_sec", fallback=300.0),
+        restart_healthy_runtime_sec=getfloat("service", "restart_healthy_runtime_sec", fallback=120.0),
         exception_log_path=os.path.expanduser(get("logging", "exception_log_path", fallback=f"{DATA_ROOT}/logs/beecam_exception_log.csv")),
     )
 
@@ -341,7 +349,22 @@ def restart_self(reason: str, oled: object | None = None):
     cleanup_camera()
     if not cfg.restart_on_exception:
         return
-    time.sleep(max(0.0, cfg.restart_delay_sec))
+
+    # Exponential backoff with a health-based reset, persisted across os.execv via the
+    # environment (which survives the re-exec). A persistent fault (dead camera, bad
+    # model file) is capped at one retry per restart_backoff_max_sec instead of a tight
+    # ~2s loop that drains the solar battery; a crash after a healthy run restarts fast.
+    run_duration = time.monotonic() - PROCESS_START_MONOTONIC
+    count = int(os.environ.get("BEECAM_RESTART_COUNT", "0"))
+    if run_duration >= cfg.restart_healthy_runtime_sec:
+        count = 0
+    count += 1
+    os.environ["BEECAM_RESTART_COUNT"] = str(count)
+    backoff = min(
+        cfg.restart_delay_sec * (2 ** (count - 1)),
+        cfg.restart_backoff_max_sec,
+    )
+    time.sleep(max(0.0, backoff))
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
@@ -402,27 +425,6 @@ def existing_path_for_usage(path: str) -> str:
     return current
 
 
-def get_recursive_size_bytes(path: str) -> int:
-    total = 0
-    if not os.path.exists(path):
-        return 0
-    try:
-        with os.scandir(path) as entries:
-            for entry in entries:
-                try:
-                    stat = entry.stat(follow_symlinks=False)
-                    total += stat.st_size
-                    if entry.is_dir(follow_symlinks=False):
-                        total += get_recursive_size_bytes(entry.path)
-                except FileNotFoundError:
-                    continue
-                except OSError:
-                    continue
-    except OSError:
-        return total
-    return total
-
-
 @dataclass
 class StorageUsage:
     data_used_percent: float
@@ -431,14 +433,15 @@ class StorageUsage:
 
 def get_storage_usage(path: str) -> StorageUsage:
     usage_path = existing_path_for_usage(path)
-    total, used, _free = shutil.disk_usage(usage_path)
+    total, _used, free = shutil.disk_usage(usage_path)
     if total <= 0:
         return StorageUsage(data_used_percent=100.0, rootfs_used_percent=100.0)
-    data_used = get_recursive_size_bytes(path)
-    return StorageUsage(
-        data_used_percent=(data_used / total) * 100.0,
-        rootfs_used_percent=(used / total) * 100.0,
-    )
+    # Fill relative to space writable by the non-root 'pi' user (free == statvfs
+    # f_bavail). On ext4 the ~5% root-reserved blocks make used/total top out near
+    # 95% at ENOSPC, so a used/total threshold never triggers. Available-based fill
+    # hits ~100% exactly when pi can no longer write.
+    used_percent = (total - free) / total * 100.0
+    return StorageUsage(data_used_percent=used_percent, rootfs_used_percent=used_percent)
 
 
 def storage_usage_exceeds_threshold(usage: StorageUsage) -> bool:
