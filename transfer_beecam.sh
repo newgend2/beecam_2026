@@ -645,7 +645,10 @@ else
     DATE_SUFFIX="${DATE_DIRS[0]}_${LAST_DATE}"
 fi
 
-ZIP_NAME="${CAM_HOSTNAME}_${DATE_SUFFIX}.zip"
+# Append the transfer date/time (YYYY-MM-DD-HH-MM-SS) so repeat transfers never collide
+# and the archive records when it was pulled off the card.
+TRANSFER_TS=$(date '+%Y-%m-%d-%H-%M-%S')
+ZIP_NAME="${CAM_HOSTNAME}_${DATE_SUFFIX}_${TRANSFER_TS}.zip"
 DEST_ZIP="$DEST/$ZIP_NAME"
 
 echo "Source:   $SOURCE_MOUNT ($SOURCE_KIND)"
