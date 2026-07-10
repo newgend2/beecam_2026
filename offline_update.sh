@@ -132,4 +132,10 @@ printf -v runtime_args_q ' %q' "${runtime_args[@]}"
 ssh_reuse "cd ${REMOTE_SETUP} && chmod +x scripts/beecam-update-runtime.sh && scripts/beecam-update-runtime.sh${runtime_args_q}"
 
 echo
+echo "==> Rebooting ${REMOTE} to apply boot-config (CMA/coherent_pool) changes"
+# reboot drops the SSH connection, so the command returns non-zero; ignore that.
+ssh_reuse "sudo reboot" || true
+echo "Reboot command sent; SSH will drop and the camera returns on its next boot."
+
+echo
 echo "Offline update complete for ${REMOTE}."
