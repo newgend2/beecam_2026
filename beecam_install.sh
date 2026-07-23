@@ -153,9 +153,12 @@ install_wittypi() {
     fi
 
     log "Disabling fake-hwclock for Witty Pi RTC"
-    sudo apt-get -y remove fake-hwclock || true
-    sudo update-rc.d -f fake-hwclock remove || true
-    sudo systemctl disable fake-hwclock || true
+    # Some SSH clients forward LC_* values for locales that are not installed
+    # on a fresh Pi. Use the always-available C locale so the legacy SysV
+    # cleanup does not emit unrelated Perl locale warnings.
+    sudo env LC_ALL=C apt-get -y remove fake-hwclock || true
+    sudo env LC_ALL=C update-rc.d -f fake-hwclock remove || true
+    sudo env LC_ALL=C systemctl disable fake-hwclock || true
     sudo rm -f /lib/udev/hwclock-set
 
     log "Installing BeeCam Witty Pi scripts"
@@ -230,7 +233,47 @@ install_boot_files() {
     sudo systemctl disable --now hciuart 2>/dev/null || true
 }
 
+wittypi_i2c_ready() {
+    local detect_output
+
+    # The Witty Pi installer adds i2c-dev to /etc/modules, but that file is
+    # normally read only during boot. Loading it here also supports systems
+    # where the I2C controller was already enabled before this install.
+    sudo modprobe i2c-dev 2>/dev/null || true
+
+    # config.txt was replaced earlier in this run. If bus 1 was not enabled in
+    # the configuration used for the current boot, only a reboot can create it.
+    if [[ ! -c /dev/i2c-1 && ! -c /dev/i2c/1 ]]; then
+        warn "I2C bus 1 is not active in the current boot; the newly installed boot configuration requires a reboot."
+        return 1
+    fi
+
+    if [[ ! -x /usr/sbin/i2cdetect ]]; then
+        warn "Cannot verify Witty Pi because /usr/sbin/i2cdetect is missing."
+        return 1
+    fi
+
+    # Probe only Witty Pi's default address. The timeout prevents a bad or
+    # disappearing bus from making the installer appear to hang in the retry
+    # loops inside the upstream utilities.sh.
+    if ! detect_output="$(sudo timeout 5 /usr/sbin/i2cdetect -y 1 0x08 0x08 2>/dev/null)"; then
+        warn "I2C bus 1 exists, but its Witty Pi probe failed."
+        return 1
+    fi
+    if ! grep -Eq '(^|[[:space:]])08([[:space:]]|$)' <<<"$detect_output"; then
+        warn "I2C bus 1 exists, but Witty Pi was not detected at address 0x08."
+        return 1
+    fi
+
+    return 0
+}
+
 apply_wittypi_schedule_now() {
+    if ! wittypi_i2c_ready; then
+        warn "Skipping immediate Witty Pi setup. Its enabled boot service will apply the power settings and arm the schedule after reboot."
+        return 0
+    fi
+
     log "Applying Witty Pi power settings and arming schedule"
     sudo "${PI_HOME}/wittypi/beforeScript.sh"
     sudo "${PI_HOME}/wittypi/runScript.sh"

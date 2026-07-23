@@ -21,7 +21,10 @@ cd ~/setup && git pull --ff-only && ./beecam_install.sh
 
 - Add `--full-upgrade` for a full OS refresh (slow). Use `--skip-apt-update` only if you just ran `sudo apt update`.
 - Installs apt/pip packages, Witty Pi, BeeCam code, boot config, and systemd services.
-- **Reboot after install** for boot-config (CMA) changes to take effect.
+- **Reboot after install** for boot-config (I2C/CMA) changes to take effect. If
+  I2C was not already active, the installer defers Witty Pi setup cleanly and
+  its boot service applies the power settings and arms the schedule after this
+  reboot.
 
 ---
 
