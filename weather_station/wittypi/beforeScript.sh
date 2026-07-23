@@ -15,6 +15,8 @@ SCHEDULE_FILE="/home/pi/wittypi/schedule.wpi"
 GENERATOR="/home/pi/weather_station/schedule/generate_wittypi_schedule.py"
 WITTYPI_UTILS="/home/pi/wittypi/utilities.sh"
 I2C_CONF_POWER_ON_WHEN_POWER_CONNECTED=17
+I2C_CONF_LOW_VOLTAGE_THRESHOLD=19
+I2C_CONF_RECOVERY_VOLTAGE_THRESHOLD=22
 
 read_config_value() {
     local key="$1"
@@ -96,6 +98,53 @@ apply_wittypi_power_settings() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: Witty Pi power-on-5V-return ${before:-unknown} -> ${after:-unknown} (requested ${power_on_return})"
 }
 
+apply_voltage_threshold() {
+    local label="$1" cfg_key="$2" register="$3" raw reg before after
+
+    raw="$(read_config_value "$cfg_key")"
+    if [[ -z "$raw" ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: no ${label} setting in ${CONFIG_FILE}; leaving unchanged"
+        return 0
+    fi
+
+    case "${raw,,}" in
+        0|0.0|disabled|disable|off|none)
+            reg=255
+            ;;
+        *)
+            if ! [[ "$raw" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: invalid ${cfg_key}=${raw}; expected a voltage 0-25.0 or 0/disabled"
+                return 0
+            fi
+            reg="$(awk -v v="$raw" 'BEGIN { printf "%d", (v * 10) + 0.5 }')"
+            if (( reg > 250 )); then
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: ${cfg_key}=${raw} out of range (max 25.0V); leaving unchanged"
+                return 0
+            fi
+            ;;
+    esac
+
+    set +e
+    before="$(i2c_read "$I2C_BUS" "$I2C_MC_ADDRESS" "$register" 2>/dev/null)"
+    i2c_write "$I2C_BUS" "$I2C_MC_ADDRESS" "$register" "$reg"
+    after="$(i2c_read "$I2C_BUS" "$I2C_MC_ADDRESS" "$register" 2>/dev/null)"
+    set -e
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: Witty Pi ${label} ${before:-unknown} -> ${after:-unknown} (requested ${raw} -> reg ${reg})"
+}
+
+apply_wittypi_voltage_thresholds() {
+    if [[ ! -r "$WITTYPI_UTILS" ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: missing ${WITTYPI_UTILS}; cannot apply Witty Pi voltage thresholds"
+        return 0
+    fi
+
+    # shellcheck disable=SC1090
+    . "$WITTYPI_UTILS"
+
+    apply_voltage_threshold "low-voltage threshold" "WITTYPI_LOW_VOLTAGE_THRESHOLD" "$I2C_CONF_LOW_VOLTAGE_THRESHOLD"
+    apply_voltage_threshold "recovery-voltage threshold" "WITTYPI_RECOVERY_VOLTAGE_THRESHOLD" "$I2C_CONF_RECOVERY_VOLTAGE_THRESHOLD"
+}
+
 mkdir -p "$(dirname "$LOGFILE")"
 exec >> "$LOGFILE" 2>&1
 
@@ -104,8 +153,13 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: started"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: applying Witty Pi power settings"
 apply_wittypi_power_settings
 
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: applying Witty Pi voltage thresholds"
+apply_wittypi_voltage_thresholds
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: running time_init.sh"
-/home/pi/weather_station/schedule/time_init.sh
+if ! /home/pi/weather_station/schedule/time_init.sh; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: time_init.sh failed; continuing with current system/RTC time so the schedule still gets (re)armed"
+fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: generating schedule"
 "$VENV_PY" "$GENERATOR"

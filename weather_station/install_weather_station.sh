@@ -27,6 +27,20 @@ require_file() {
     fi
 }
 
+# Adds KEY=VALUE to an existing config file only if that key is missing.
+# Existing field-edited configs are otherwise preserved untouched; this
+# specifically backfills newly-introduced settings that older configs
+# predate, so preservation doesn't leave them permanently absent.
+ensure_config_key() {
+    local file="$1" key="$2" value="$3"
+    [[ -f "$file" ]] || return 0
+    if grep -Eq "^[[:space:]]*${key}=" "$file"; then
+        return 0
+    fi
+    log "Adding missing ${key}=${value} to $(basename "$file")"
+    printf '%s=%s\n' "$key" "$value" | sudo tee -a "$file" >/dev/null
+}
+
 usage() {
     cat <<'USAGE'
 Usage:
@@ -172,6 +186,8 @@ install_weather_station_files() {
         sudo chown -R pi:pi "$DATA_CONFIG_DIR"
     else
         log "Preserving existing ${DATA_CONFIG_DIR}"
+        ensure_config_key "${DATA_CONFIG_DIR}/schedule.conf" "WITTYPI_LOW_VOLTAGE_THRESHOLD" "3.5"
+        ensure_config_key "${DATA_CONFIG_DIR}/schedule.conf" "WITTYPI_RECOVERY_VOLTAGE_THRESHOLD" "4.0"
     fi
 }
 
@@ -190,6 +206,12 @@ install_boot_files() {
         echo "Failed to replace ${boot_dir}/config.txt" >&2
         exit 1
     fi
+}
+
+apply_wittypi_schedule_now() {
+    log "Applying Witty Pi power settings and arming schedule"
+    sudo "${PI_HOME}/wittypi/beforeScript.sh"
+    sudo "${PI_HOME}/wittypi/runScript.sh"
 }
 
 install_systemd_services() {
@@ -230,6 +252,7 @@ main() {
     install_weather_station_files
     install_boot_files
     install_systemd_services
+    apply_wittypi_schedule_now
 
     log "Weather station install complete"
     echo "Reboot before testing scheduled sensor logging."

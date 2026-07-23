@@ -90,3 +90,4 @@ Shut the Pi down, move the SD card to a Linux PC, mount it, then:
 - **Camera won't image:** check `journalctl -u beecam.service`; confirm the schedule window and that the disk isn't full.
 - **Wi-Fi/Bluetooth are off** (power saving) — use Ethernet for SSH and NTP.
 - **Verify power-cut recovery:** `sudo scripts/wittypi-powercut-test.sh --shutdown-delay-sec 180 --off-duration-sec 300` (restore with `--restore`).
+- **Camera won't boot despite 5V present:** check `WITTYPI_LOW_VOLTAGE_THRESHOLD`/`WITTYPI_RECOVERY_VOLTAGE_THRESHOLD` in `schedule.conf` and `/home/pi/data/logs/before_script.log` — these registers (19/22) keep the Pi from getting stuck off after a brownout even though input is back in range; unmanaged/mismatched thresholds are a common cause of a camera that looks powered but stays off until unplugged and replugged.
