@@ -35,6 +35,35 @@ cfg = None
 log_lock = threading.Lock()
 status_lock = threading.Lock()
 
+VERSION_FILE = Path(__file__).resolve().parent / "VERSION"
+
+
+def read_version() -> str:
+    try:
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def short_version(value: str, max_chars: int = 5) -> str:
+    # VERSION is "YYYY.MM.DD"; drop the year on space-constrained OLED lines
+    # since the release date alone already answers "how stale is this".
+    parts = value.split(".")
+    if len(parts) == 3 and all(parts):
+        return f"{parts[1]}.{parts[2]}"
+    return value[-max_chars:]
+
+
+# Set by time_init.sh when Witty Pi's daemon found the RTC had lost its time
+# (a power outage longer than the ~17h supercap backup). Checked once at
+# startup: past that point the clock is either fixed by NTP or still wrong
+# for the rest of this boot, so there is no need to re-stat it every refresh.
+TIME_UNKNOWN = os.path.exists(os.path.join(DATA_ROOT, ".time_unknown"))
+
+
+VERSION = read_version()
+SHORT_VERSION = short_version(VERSION)
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -414,7 +443,8 @@ class OledWorker(threading.Thread):
                 readings_today = status.readings_today
 
             station = fit_display_line(cfg.unit_name, max_chars=8)
-            line1 = f"{station} {datetime.now().strftime('%m-%d %H:%M')}"
+            clock = "CLK?" if TIME_UNKNOWN else datetime.now().strftime('%H:%M')
+            line1 = f"{station} v{SHORT_VERSION} {clock}"
 
             if reading is None:
                 line2 = "Sensors starting"
@@ -515,7 +545,7 @@ def main() -> None:
         [
             f"{hostname} {datetime.now().strftime('%m-%d %H:%M')}",
             "Initializing...",
-            "",
+            f"Version {VERSION}",
             "",
             "INIT",
         ],

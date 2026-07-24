@@ -13,6 +13,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from libcamera import controls
 from picamera2 import Picamera2
@@ -60,6 +61,42 @@ last_stale_suppression_log = 0.0
 
 hostname = socket.gethostname()
 DATA_ROOT = "/home/pi/data"
+
+VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
+
+
+def read_version() -> str:
+    try:
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def short_version(value: str, max_chars: int = 5) -> str:
+    # VERSION is "YYYY.MM.DD"; drop the year on space-constrained OLED lines
+    # since the release date alone already answers "how stale is this".
+    parts = value.split(".")
+    if len(parts) == 3 and all(parts):
+        return f"{parts[1]}.{parts[2]}"
+    return value[-max_chars:]
+
+
+# Set by time_init.sh when Witty Pi's daemon found the RTC had lost its time
+# (a power outage longer than the ~17h supercap backup). Checked once at
+# startup: past that point the clock is either fixed by NTP or still wrong
+# for the rest of this boot, so there is no need to re-stat it every refresh.
+TIME_UNKNOWN = os.path.exists(os.path.join(DATA_ROOT, ".time_unknown"))
+
+
+def fit_display_line(value: str, max_chars: int = 21) -> str:
+    text = str(value)
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1] + "."
+
+
+VERSION = read_version()
+SHORT_VERSION = short_version(VERSION)
 
 # Monotonic timestamp captured when this process image started. Reset on every
 # os.execv restart, so it measures how long the current run survived before failing.
@@ -665,7 +702,9 @@ class OledWorker(threading.Thread):
 
         while not self.stop_event.is_set():
             with status_lock:
-                now_str = f"{hostname} {datetime.now().strftime('%m-%d %H:%M')}"
+                station = fit_display_line(hostname, max_chars=8)
+                clock = "CLK?" if TIME_UNKNOWN else datetime.now().strftime('%H:%M')
+                now_str = f"{station} v{SHORT_VERSION} {clock}"
                 current_state = status.state
 
                 if current_state == "INIT":
@@ -1419,11 +1458,16 @@ def main():
     args = get_args()
     cfg = read_config(args.config)
 
+    if cfg.log_startup:
+        print(f"BeeCam version {VERSION}", flush=True)
+        if TIME_UNKNOWN:
+            print("WARNING: Witty Pi reported a bad RTC time this boot; system clock is unverified", flush=True)
+
     oled = OledDisplay(enabled=cfg.oled_enabled, log_errors=cfg.log_startup)
     _oled_show_safe(oled, [
         f"{hostname} {datetime.now().strftime('%m-%d %H:%M')}",
         "Initializing...",
-        "",
+        f"Version {VERSION}",
         "",
         "INIT",
     ])

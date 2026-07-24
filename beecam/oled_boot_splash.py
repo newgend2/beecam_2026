@@ -5,11 +5,13 @@ import argparse
 import configparser
 import socket
 from datetime import datetime
+from pathlib import Path
 
 I2C_BUS = 1
 I2C_ADDRESS = 0x3C
 WIDTH = 128
 HEIGHT = 64
+VERSION_FILE = Path(__file__).resolve().parent / "VERSION"
 
 # Standard SSD1306 init sequence (external VCC off / charge pump on), same
 # settings Adafruit's driver uses for a 128x64 panel. Written directly over
@@ -48,6 +50,13 @@ def oled_enabled(config_path: str) -> bool:
     return str_to_bool(parser.get("oled", "enabled", fallback="true"), True)
 
 
+def read_version() -> str:
+    try:
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="/home/pi/data/configs/camera_config_final.ini")
@@ -67,7 +76,7 @@ def render_splash_image():
         f"{hostname} {datetime.now().strftime('%m-%d %H:%M')}",
         "BeeCam booting",
         "Initializing...",
-        "",
+        f"Version {read_version()}",
         "BOOT",
     ]
     y = 1
