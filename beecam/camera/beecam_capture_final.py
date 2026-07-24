@@ -87,26 +87,38 @@ def short_version(value: str, max_chars: int = 5) -> str:
 # for the rest of this boot, so there is no need to re-stat it every refresh.
 TIME_UNKNOWN = os.path.exists(os.path.join(DATA_ROOT, ".time_unknown"))
 
-# Register 11 (I2C_ACTION_REASON) value meaning "voltage crossed back above
-# the Witty Pi recovery threshold after a low-voltage cutoff, while power
-# stayed continuously connected." Written once per boot by
-# wittypi/beforeScript.sh's record_wittypi_wake_reason() into
-# /home/pi/data/.wake_reason. Read once here since it cannot change again
-# until the next boot.
+# Two independent low-battery-event signals, written once per boot by
+# wittypi/beforeScript.sh's record_wittypi_power_event_flags(). Read once
+# here since neither can change again until the next boot.
+#
+# REASON_VOLTAGE_RESTORE (register 11 / I2C_ACTION_REASON = 0x05) means
+# Witty Pi watched input voltage cross back above the recovery threshold
+# after a low-voltage cutoff, while staying continuously connected.
+#
+# WAS_LOW_VOLTAGE_SHUTDOWN (register 8 / I2C_LV_SHUTDOWN) means Witty Pi's
+# *previous* shutdown was caused by its own low-voltage protection,
+# regardless of how the subsequent reconnect looked. This matters on
+# DC-regulator setups where input voltage collapses straight to ~0V rather
+# than lingering in the threshold band -- a real low-battery event can end
+# up reading as an ordinary "power connected" wake (indistinguishable from
+# a manual unplug/replug) and never produce 0x05, but Witty Pi's own
+# decision to shut down for low voltage is still recorded here either way.
 REASON_VOLTAGE_RESTORE = "0x05"
 WAKE_REASON_FILE = os.path.join(DATA_ROOT, ".wake_reason")
+LV_SHUTDOWN_FILE = os.path.join(DATA_ROOT, ".wittypi_lv_shutdown")
 
 
-def _read_wake_reason() -> str | None:
+def _read_marker_file(path: str) -> str | None:
     try:
-        with open(WAKE_REASON_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             value = f.read().strip().lower()
             return value or None
     except OSError:
         return None
 
 
-WAKE_REASON = _read_wake_reason()
+WAKE_REASON = _read_marker_file(WAKE_REASON_FILE)
+WAS_LOW_VOLTAGE_SHUTDOWN = _read_marker_file(LV_SHUTDOWN_FILE) == "0x01"
 
 
 def fit_display_line(value: str, max_chars: int = 21) -> str:
@@ -596,6 +608,7 @@ def parse_schedule_wpi(path: str):
             "ok": False,
             "startup_short": "--:--",
             "shutdown_short": "--:--",
+            "shutdown_raw": None,
             "message": "No schedule.wpi found",
         }
 
@@ -634,6 +647,7 @@ def parse_schedule_wpi(path: str):
             "ok": False,
             "startup_short": "--:--",
             "shutdown_short": "--:--",
+            "shutdown_raw": None,
             "message": "Schedule read error",
         }
 
@@ -645,6 +659,7 @@ def parse_schedule_wpi(path: str):
             "ok": False,
             "startup_short": "--:--",
             "shutdown_short": "--:--",
+            "shutdown_raw": None,
             "message": "No schedule info",
         }
 
@@ -652,6 +667,7 @@ def parse_schedule_wpi(path: str):
         "ok": True,
         "startup_short": shorten_schedule_time(startup) if startup else "--:--",
         "shutdown_short": shorten_schedule_time(shutdown) if shutdown else "--:--",
+        "shutdown_raw": shutdown,
         "message": None,
     }
 
@@ -1477,12 +1493,36 @@ def stay_alive_storage_locked(stop_event: threading.Event):
         time.sleep(1.0)
 
 
-def hold_low_battery_recovery(oled: object | None, delay_min: float):
-    if WAKE_REASON != REASON_VOLTAGE_RESTORE:
+def _armed_shutdown_monotonic(schedule_wpi_path: str) -> float | None:
+    """Returns the Witty Pi-armed next-shutdown time as a time.monotonic()
+    deadline, or None if it can't be determined. Read from schedule.wpi
+    (written synchronously by beforeScript.sh before beecam.service ever
+    starts) rather than the live alarm registers, since runScript.sh writes
+    those in the background and could still be racing us."""
+    schedule_info = parse_schedule_wpi(schedule_wpi_path)
+    raw = schedule_info.get("shutdown_raw")
+    if not raw:
+        return None
+    try:
+        armed_shutdown = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    seconds_away = (armed_shutdown - datetime.now()).total_seconds()
+    return time.monotonic() + seconds_away
+
+
+def hold_low_battery_recovery(oled: object | None, delay_min: float, schedule_wpi_path: str):
+    triggers = []
+    if WAKE_REASON == REASON_VOLTAGE_RESTORE:
+        triggers.append(f"wake reason={REASON_VOLTAGE_RESTORE}")
+    if WAS_LOW_VOLTAGE_SHUTDOWN:
+        triggers.append("previous shutdown was low-voltage")
+
+    if not triggers:
         if cfg.log_startup:
             print(
                 f"Low-battery recovery hold skipped (wake reason={WAKE_REASON or 'unknown'}, "
-                f"expected {REASON_VOLTAGE_RESTORE})",
+                "previous shutdown was not low-voltage)",
                 flush=True,
             )
         return
@@ -1494,8 +1534,8 @@ def hold_low_battery_recovery(oled: object | None, delay_min: float):
 
     if cfg.log_startup:
         print(
-            f"Low-battery recovery detected (wake reason={REASON_VOLTAGE_RESTORE}); "
-            f"holding camera init for {delay_min:.1f} min before resuming",
+            f"Low-battery recovery detected ({', '.join(triggers)}); "
+            f"holding camera init for up to {delay_min:.1f} min before resuming",
             flush=True,
         )
 
@@ -1504,6 +1544,22 @@ def hold_low_battery_recovery(oled: object | None, delay_min: float):
 
     oled_redraw_interval_sec = 20.0
     end_monotonic = time.monotonic() + (delay_min * 60.0)
+
+    # Witty Pi may already have an imminent shutdown armed (e.g. a short
+    # after-hours recovery cycle) regardless of what we do here -- there's
+    # no point counting down past a deadline the hardware will enforce on
+    # its own, so cap the hold (and the displayed countdown) to whichever
+    # is sooner.
+    armed_deadline = _armed_shutdown_monotonic(schedule_wpi_path)
+    if armed_deadline is not None and armed_deadline < end_monotonic:
+        if cfg.log_startup:
+            print(
+                "Low-battery recovery hold capped by Witty Pi's already-armed shutdown "
+                f"({armed_deadline - time.monotonic():.0f}s away)",
+                flush=True,
+            )
+        end_monotonic = armed_deadline
+
     last_draw_monotonic = 0.0
 
     while True:
@@ -1560,7 +1616,7 @@ def main():
 
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
-    hold_low_battery_recovery(oled, cfg.low_battery_recovery_delay_min)
+    hold_low_battery_recovery(oled, cfg.low_battery_recovery_delay_min, cfg.schedule_wpi_path)
 
     write_hostname_marker()
 

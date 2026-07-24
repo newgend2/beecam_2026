@@ -20,10 +20,12 @@ SCHEDULE_FILE="/home/pi/wittypi/schedule.wpi"
 GENERATOR="/home/pi/beecam/schedule/generate_wittypi_schedule.py"
 WITTYPI_UTILS="/home/pi/wittypi/utilities.sh"
 WAKE_REASON_FILE="/home/pi/data/.wake_reason"
+LV_SHUTDOWN_FILE="/home/pi/data/.wittypi_lv_shutdown"
 I2C_CONF_POWER_ON_WHEN_POWER_CONNECTED=17
 I2C_CONF_LOW_VOLTAGE_THRESHOLD=19
 I2C_CONF_RECOVERY_VOLTAGE_THRESHOLD=22
 I2C_ACTION_REASON=11
+I2C_LV_SHUTDOWN=8
 
 read_config_value() {
     local key="$1"
@@ -152,25 +154,41 @@ apply_wittypi_voltage_thresholds() {
     apply_voltage_threshold "recovery-voltage threshold" "WITTYPI_RECOVERY_VOLTAGE_THRESHOLD" "$I2C_CONF_RECOVERY_VOLTAGE_THRESHOLD"
 }
 
-# Records why Witty Pi woke up this boot (register 11 / I2C_ACTION_REASON),
-# so beecam_capture_final.py can tell a deliberate human action (button
-# click, cable/USB connected, plain reboot, normal scheduled alarm) apart
-# from an automatic low-voltage recovery wake (0x05), and hold off on
-# starting the power-hungry camera/ML hardware only in the latter case.
-# Always overwrites the marker every boot -- unlike the .time_unknown
-# marker, a stale value here must never be allowed to survive into a boot
-# it doesn't describe, since that could wrongly delay (or wrongly skip
-# delaying) camera startup. Any failure to read resolves to "unknown",
-# which downstream treats as "not a low-voltage recovery" -- the safe
-# direction, since deliberate human wakes must never be delayed.
-record_wittypi_wake_reason() {
-    local reason
+# Records two independent signals so beecam_capture_final.py can tell a
+# deliberate human action (button click, cable/USB connected, plain reboot,
+# normal scheduled alarm) apart from an automatic low-battery recovery, and
+# hold off on starting the power-hungry camera/ML hardware only in the
+# latter case:
+#
+#   1. Why Witty Pi woke up this boot (register 11 / I2C_ACTION_REASON).
+#      0x05 (REASON_VOLTAGE_RESTORE) means input voltage was watched
+#      crossing back above the recovery threshold after a low-voltage
+#      cutoff, while staying continuously connected.
+#   2. Whether Witty Pi's *previous* shutdown was caused by its own
+#      low-voltage protection (register 8 / I2C_LV_SHUTDOWN). This is
+#      decoupled from how fast the reconnect looked: on DC-regulator setups
+#      where input voltage collapses straight to 0V rather than lingering
+#      in the threshold band, a real low-battery event can end up reading
+#      as an ordinary "power connected" wake (same as a manual unplug),
+#      never producing 0x05 -- but Witty Pi's own decision to shut down for
+#      low voltage still gets recorded here regardless of how the
+#      subsequent reconnect looked.
+#
+# Both markers are always overwritten every boot -- unlike the
+# .time_unknown marker, a stale value here must never be allowed to survive
+# into a boot it doesn't describe, since that could wrongly delay (or
+# wrongly skip delaying) camera startup. Any failure to read resolves to
+# "unknown"/not-set, which downstream treats as "not a low-battery event" --
+# the safe direction, since deliberate human wakes must never be delayed.
+record_wittypi_power_event_flags() {
+    local reason lv_shutdown
 
     mkdir -p "$(dirname "$WAKE_REASON_FILE")"
 
     if [[ ! -r "$WITTYPI_UTILS" ]]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: missing ${WITTYPI_UTILS}; cannot read Witty Pi wake reason"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: missing ${WITTYPI_UTILS}; cannot read Witty Pi power event flags"
         echo "unknown" > "$WAKE_REASON_FILE"
+        echo "unknown" > "$LV_SHUTDOWN_FILE"
         return 0
     fi
 
@@ -179,16 +197,24 @@ record_wittypi_wake_reason() {
 
     set +e
     reason="$(i2c_read "$I2C_BUS" "$I2C_MC_ADDRESS" "$I2C_ACTION_REASON" 2>/dev/null)"
+    lv_shutdown="$(i2c_read "$I2C_BUS" "$I2C_MC_ADDRESS" "$I2C_LV_SHUTDOWN" 2>/dev/null)"
     set -e
 
     if [[ -z "$reason" ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: could not read Witty Pi wake reason (register ${I2C_ACTION_REASON})"
         echo "unknown" > "$WAKE_REASON_FILE"
-        return 0
+    else
+        echo "$reason" > "$WAKE_REASON_FILE"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: Witty Pi wake reason = ${reason} (written to ${WAKE_REASON_FILE})"
     fi
 
-    echo "$reason" > "$WAKE_REASON_FILE"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: Witty Pi wake reason = ${reason} (written to ${WAKE_REASON_FILE})"
+    if [[ -z "$lv_shutdown" ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: could not read Witty Pi low-voltage-shutdown flag (register ${I2C_LV_SHUTDOWN})"
+        echo "unknown" > "$LV_SHUTDOWN_FILE"
+    else
+        echo "$lv_shutdown" > "$LV_SHUTDOWN_FILE"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: Witty Pi previous-shutdown-was-low-voltage flag = ${lv_shutdown} (written to ${LV_SHUTDOWN_FILE})"
+    fi
 }
 
 mkdir -p "$(dirname "$LOGFILE")"
@@ -196,8 +222,8 @@ exec >> "$LOGFILE" 2>&1
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: started"
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: recording Witty Pi wake reason"
-record_wittypi_wake_reason
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: recording Witty Pi power event flags"
+record_wittypi_power_event_flags
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: applying Witty Pi power settings"
 apply_wittypi_power_settings
