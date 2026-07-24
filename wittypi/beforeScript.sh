@@ -19,9 +19,11 @@ CONFIG_FILE="/home/pi/data/configs/schedule.conf"
 SCHEDULE_FILE="/home/pi/wittypi/schedule.wpi"
 GENERATOR="/home/pi/beecam/schedule/generate_wittypi_schedule.py"
 WITTYPI_UTILS="/home/pi/wittypi/utilities.sh"
+WAKE_REASON_FILE="/home/pi/data/.wake_reason"
 I2C_CONF_POWER_ON_WHEN_POWER_CONNECTED=17
 I2C_CONF_LOW_VOLTAGE_THRESHOLD=19
 I2C_CONF_RECOVERY_VOLTAGE_THRESHOLD=22
+I2C_ACTION_REASON=11
 
 read_config_value() {
     local key="$1"
@@ -150,10 +152,52 @@ apply_wittypi_voltage_thresholds() {
     apply_voltage_threshold "recovery-voltage threshold" "WITTYPI_RECOVERY_VOLTAGE_THRESHOLD" "$I2C_CONF_RECOVERY_VOLTAGE_THRESHOLD"
 }
 
+# Records why Witty Pi woke up this boot (register 11 / I2C_ACTION_REASON),
+# so beecam_capture_final.py can tell a deliberate human action (button
+# click, cable/USB connected, plain reboot, normal scheduled alarm) apart
+# from an automatic low-voltage recovery wake (0x05), and hold off on
+# starting the power-hungry camera/ML hardware only in the latter case.
+# Always overwrites the marker every boot -- unlike the .time_unknown
+# marker, a stale value here must never be allowed to survive into a boot
+# it doesn't describe, since that could wrongly delay (or wrongly skip
+# delaying) camera startup. Any failure to read resolves to "unknown",
+# which downstream treats as "not a low-voltage recovery" -- the safe
+# direction, since deliberate human wakes must never be delayed.
+record_wittypi_wake_reason() {
+    local reason
+
+    mkdir -p "$(dirname "$WAKE_REASON_FILE")"
+
+    if [[ ! -r "$WITTYPI_UTILS" ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: missing ${WITTYPI_UTILS}; cannot read Witty Pi wake reason"
+        echo "unknown" > "$WAKE_REASON_FILE"
+        return 0
+    fi
+
+    # shellcheck disable=SC1090
+    . "$WITTYPI_UTILS"
+
+    set +e
+    reason="$(i2c_read "$I2C_BUS" "$I2C_MC_ADDRESS" "$I2C_ACTION_REASON" 2>/dev/null)"
+    set -e
+
+    if [[ -z "$reason" ]]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: could not read Witty Pi wake reason (register ${I2C_ACTION_REASON})"
+        echo "unknown" > "$WAKE_REASON_FILE"
+        return 0
+    fi
+
+    echo "$reason" > "$WAKE_REASON_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: Witty Pi wake reason = ${reason} (written to ${WAKE_REASON_FILE})"
+}
+
 mkdir -p "$(dirname "$LOGFILE")"
 exec >> "$LOGFILE" 2>&1
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: started"
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: recording Witty Pi wake reason"
+record_wittypi_wake_reason
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] beforeScript: applying Witty Pi power settings"
 apply_wittypi_power_settings

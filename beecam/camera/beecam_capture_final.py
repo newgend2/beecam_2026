@@ -87,6 +87,27 @@ def short_version(value: str, max_chars: int = 5) -> str:
 # for the rest of this boot, so there is no need to re-stat it every refresh.
 TIME_UNKNOWN = os.path.exists(os.path.join(DATA_ROOT, ".time_unknown"))
 
+# Register 11 (I2C_ACTION_REASON) value meaning "voltage crossed back above
+# the Witty Pi recovery threshold after a low-voltage cutoff, while power
+# stayed continuously connected." Written once per boot by
+# wittypi/beforeScript.sh's record_wittypi_wake_reason() into
+# /home/pi/data/.wake_reason. Read once here since it cannot change again
+# until the next boot.
+REASON_VOLTAGE_RESTORE = "0x05"
+WAKE_REASON_FILE = os.path.join(DATA_ROOT, ".wake_reason")
+
+
+def _read_wake_reason() -> str | None:
+    try:
+        with open(WAKE_REASON_FILE, "r", encoding="utf-8") as f:
+            value = f.read().strip().lower()
+            return value or None
+    except OSError:
+        return None
+
+
+WAKE_REASON = _read_wake_reason()
+
 
 def fit_display_line(value: str, max_chars: int = 21) -> str:
     text = str(value)
@@ -150,6 +171,8 @@ class AppConfig:
     storage_check_interval_sec: float
 
     schedule_wpi_path: str
+
+    low_battery_recovery_delay_min: float
 
     oled_enabled: bool
     oled_refresh_sec: float
@@ -317,6 +340,8 @@ def read_config(config_path: str) -> AppConfig:
         storage_check_interval_sec=getfloat("storage", "check_interval_sec", fallback=30.0),
 
         schedule_wpi_path=os.path.expanduser(get("schedule", "schedule_wpi_path", fallback="/home/pi/wittypi/schedule.wpi")),
+
+        low_battery_recovery_delay_min=getfloat("power", "low_battery_recovery_delay_min", fallback=15.0),
 
         oled_enabled=getbool("oled", "enabled", fallback=True),
         oled_refresh_sec=getfloat("oled", "refresh_sec", fallback=1.0),
@@ -1452,6 +1477,62 @@ def stay_alive_storage_locked(stop_event: threading.Event):
         time.sleep(1.0)
 
 
+def hold_low_battery_recovery(oled: object | None, delay_min: float):
+    if WAKE_REASON != REASON_VOLTAGE_RESTORE:
+        if cfg.log_startup:
+            print(
+                f"Low-battery recovery hold skipped (wake reason={WAKE_REASON or 'unknown'}, "
+                f"expected {REASON_VOLTAGE_RESTORE})",
+                flush=True,
+            )
+        return
+
+    if delay_min <= 0:
+        if cfg.log_startup:
+            print("Low-battery recovery hold skipped (low_battery_recovery_delay_min <= 0)", flush=True)
+        return
+
+    if cfg.log_startup:
+        print(
+            f"Low-battery recovery detected (wake reason={REASON_VOLTAGE_RESTORE}); "
+            f"holding camera init for {delay_min:.1f} min before resuming",
+            flush=True,
+        )
+
+    with status_lock:
+        status.state = "CHARGING"
+
+    oled_redraw_interval_sec = 20.0
+    end_monotonic = time.monotonic() + (delay_min * 60.0)
+    last_draw_monotonic = 0.0
+
+    while True:
+        with status_lock:
+            if status.state == "STOPPING":
+                return
+
+        remaining_sec = end_monotonic - time.monotonic()
+        if remaining_sec <= 0:
+            break
+
+        now_mono = time.monotonic()
+        if now_mono - last_draw_monotonic >= oled_redraw_interval_sec or last_draw_monotonic == 0.0:
+            remaining_min = max(1, int((remaining_sec + 59) // 60))
+            _oled_show_safe(oled, [
+                f"{hostname} {datetime.now().strftime('%m-%d %H:%M')}",
+                "Low-voltage recovery",
+                "Delaying camera init",
+                "",
+                f"CHARGING {remaining_min}m",
+            ])
+            last_draw_monotonic = now_mono
+
+        time.sleep(min(1.0, remaining_sec))
+
+    if cfg.log_startup:
+        print("Low-battery recovery hold complete; resuming normal startup", flush=True)
+
+
 def main():
     global cfg
 
@@ -1471,6 +1552,15 @@ def main():
         "",
         "INIT",
     ])
+
+    def _sigterm_handler(_signum, _frame):
+        with status_lock:
+            status.state = "STOPPING"
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
+    hold_low_battery_recovery(oled, cfg.low_battery_recovery_delay_min)
 
     write_hostname_marker()
 
@@ -1498,13 +1588,6 @@ def main():
     oled_worker = OledWorker(oled, stop_event)
     storage_monitor.start()
     oled_worker.start()
-
-    def _sigterm_handler(_signum, _frame):
-        with status_lock:
-            status.state = "STOPPING"
-        sys.exit(0)
-
-    signal.signal(signal.SIGTERM, _sigterm_handler)
 
     if storage_usage_exceeds_threshold(initial_storage_usage):
         stay_alive_storage_locked(stop_event)
