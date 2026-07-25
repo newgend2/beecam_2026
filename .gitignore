@@ -7,3 +7,6 @@ __pycache__/
 .DS_Store
 .codex
 fstab
+
+# opensrc - source code for packages
+opensrc/
