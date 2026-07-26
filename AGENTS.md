@@ -4,7 +4,24 @@
 
 This repo supports the Beecam 2026 Raspberry Pi setup, including SD card prep, install scripts, systemd services, camera and schedule code, and weather station code.
 
+## Hardware
 
+### Main hardware unit
+
+Items:
+
+1. Raspberry Pi Zero 2 W
+2. Raspberry Pi AI Camera (IMX500 sensor)
+3. DS3231 RTC
+4. Witty Pi 4 Mini
+5. Pi Qwiic HAT
+6. OLED display
+
+The AI camera connects to the Pi Zero 2 W via the camera data cable. The RTC and OLED display interface with the Pi via JST cables to the Pi Qwiic HAT. The Pi Qwiic HAT is mounted to the Pi via the 2x20 pin headers. The Witty Pi 4 Mini is also mounted to the Pi via these 2x20 headers.
+
+### Power
+
+The main hardware unit is powered by Voltaic lithium iron phosphate battery/solar units. Deployments use a mix of 18Ah and 60Ah batteries, all charged by 50W solar panels. DC regulators connected to the battery output a steady ~5 V to the Witty Pi 4 Mini.
 
 ## Important Files/Folders
 
