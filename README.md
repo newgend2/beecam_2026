@@ -10,7 +10,7 @@ All runtime data lives on the root filesystem under `/home/pi/data`.
 From `/home/pi` on the Pi, paste one line:
 
 ```bash
-sudo apt update && sudo apt install -y git && git clone --branch feature/no-exfat-data --single-branch https://github.com/newgend2/beecam_2026.git setup && cd setup && chmod +x beecam_install.sh scripts/*.sh && ./beecam_install.sh --skip-apt-update
+sudo apt update && sudo apt install -y git && git clone --branch main --single-branch https://github.com/newgend2/beecam_2026.git setup && cd setup && chmod +x beecam_install.sh scripts/*.sh && ./beecam_install.sh --skip-apt-update
 ```
 
 Reinstall / re-run later:

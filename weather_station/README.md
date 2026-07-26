@@ -23,11 +23,10 @@ wind threshold.
 
 ## Quick Start
 
-On a fresh Raspberry Pi, paste this from the default `/home/pi` directory. The
-current rootfs-data workflow lives on the `feature/no-exfat-data` branch:
+On a fresh Raspberry Pi, paste this from the default `/home/pi` directory:
 
 ```bash
-sudo apt update && sudo apt install -y git && git clone --branch feature/no-exfat-data --single-branch https://github.com/newgend2/beecam_2026.git setup && cd setup/weather_station && chmod +x install_weather_station.sh scripts/weather-station-init-data.sh && ./install_weather_station.sh --skip-apt-update
+sudo apt update && sudo apt install -y git && git clone --branch main --single-branch https://github.com/newgend2/beecam_2026.git setup && cd setup/weather_station && chmod +x install_weather_station.sh scripts/weather-station-init-data.sh && ./install_weather_station.sh --skip-apt-update
 ```
 
 If the repo has already been cloned, rerun the installer with:
