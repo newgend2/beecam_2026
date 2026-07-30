@@ -184,6 +184,9 @@ install_beecam_files() {
     sudo rm -rf "${PI_HOME}/beecam"
     sudo cp -a "${SCRIPT_DIR}/beecam" "${PI_HOME}/beecam"
     sudo rm -rf "${PI_HOME}/beecam/camera/relegated" "${PI_HOME}/beecam/camera/__pycache__"
+    sudo rm -f \
+        "${PI_HOME}/beecam/camera/packerout/bombus_model_v1/network.rpk.letterbox.bak" \
+        "${PI_HOME}/beecam/camera/packerout/bombus_model_v1/packerOut.zip"
     sudo find "${PI_HOME}/beecam/camera" -maxdepth 1 -type f -name '*.py' \
         ! -name 'beecam_capture_final.py' \
         ! -name 'beecam_preview.py' \

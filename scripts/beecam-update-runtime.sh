@@ -188,6 +188,9 @@ log "Updating /home/pi/beecam"
 sudo rm -rf "$APP_DIR"
 sudo cp -a "${REPO_DIR}/beecam" "$APP_DIR"
 sudo rm -rf "${APP_DIR}/camera/relegated" "${APP_DIR}/camera/__pycache__"
+sudo rm -f \
+    "${APP_DIR}/camera/packerout/bombus_model_v1/network.rpk.letterbox.bak" \
+    "${APP_DIR}/camera/packerout/bombus_model_v1/packerOut.zip"
 sudo find "${APP_DIR}/camera" -maxdepth 1 -type f -name '*.py' \
     ! -name "${CAPTURE_SCRIPT}" \
     ! -name 'beecam_preview.py' \

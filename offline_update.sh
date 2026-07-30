@@ -129,10 +129,13 @@ fi
 
 echo
 echo "==> Syncing repo to camera"
+# Keep archived/rebuild-only model files on the field laptop.
 rsync -az --delete \
     -e "ssh -o ControlPath=${SSH_CONTROL_PATH}" \
     --exclude='.git/' \
     --exclude='beecam/camera/__pycache__/' \
+    --exclude='beecam/camera/packerout/bombus_model_v1/network.rpk.letterbox.bak' \
+    --exclude='beecam/camera/packerout/bombus_model_v1/packerOut.zip' \
     "${SCRIPT_DIR}/" "${REMOTE}:${REMOTE_SETUP}/"
 
 echo
