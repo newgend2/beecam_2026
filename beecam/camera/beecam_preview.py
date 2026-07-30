@@ -127,8 +127,8 @@ def read_config(config_path: str) -> AppConfig:
         stale_area_ratio_max=getfloat("stale_detection", "area_ratio_max", fallback=2.00),
         ae_enable=getbool("exposure", "ae_enable", fallback=True),
         ae_exposure_mode=get("exposure", "ae_exposure_mode", fallback="short").strip().lower(),
-        display_width=getint("display", "display_width", fallback=1920),
-        display_height=getint("display", "display_height", fallback=1080),
+        display_width=getint("display", "display_width", fallback=800),
+        display_height=getint("display", "display_height", fallback=480),
         preview_backend="drm",
     )
 
@@ -649,6 +649,8 @@ def main():
         if not intrinsics:
             intrinsics = NetworkIntrinsics()
             intrinsics.task = "object detection"
+        elif intrinsics.task != "object detection":
+            raise RuntimeError(f"Network task is {intrinsics.task!r}, not object detection")
 
         intrinsics.bbox_order = cfg.bbox_order
         intrinsics.bbox_normalization = cfg.bbox_normalization
@@ -657,17 +659,24 @@ def main():
         if cfg.postprocess is not None:
             intrinsics.postprocess = cfg.postprocess
 
-        if cfg.labels_path and os.path.exists(cfg.labels_path):
-            with open(cfg.labels_path, "r") as f:
-                intrinsics.labels = f.read().splitlines()
+        if not cfg.labels_path or not os.path.isfile(cfg.labels_path):
+            raise FileNotFoundError(f"Could not read labels file: {cfg.labels_path}")
+        with open(cfg.labels_path, "r", encoding="utf-8") as f:
+            intrinsics.labels = [label for label in f.read().splitlines() if label]
+        if not intrinsics.labels:
+            raise RuntimeError(f"Labels file is empty: {cfg.labels_path}")
 
         intrinsics.update_with_defaults()
-        print(f"Preview detection config: postprocess={intrinsics.postprocess} threshold={cfg.threshold} iou={cfg.iou}")
+        print(
+            f"Preview detection config: model={cfg.model_path} "
+            f"input={imx500.get_input_size()} labels={intrinsics.labels} "
+            f"postprocess={intrinsics.postprocess} threshold={cfg.threshold} iou={cfg.iou}"
+        )
 
         picam2 = Picamera2(imx500.camera_num)
         ae_mode = ae_exposure_mode_from_string(cfg.ae_exposure_mode)
 
-        main_size = (1280, 960)
+        main_size = (cfg.preview_width, cfg.preview_height)
         preview_config = picam2.create_preview_configuration(
             main={"size": main_size},
             controls={
@@ -719,9 +728,14 @@ def main():
         else:
             print("Preview interrupted.", file=sys.stderr)
     finally:
-        if picam2 is not None and started_camera:
+        if picam2 is not None:
             try:
-                picam2.stop()
+                if started_camera:
+                    picam2.stop()
+            except Exception:
+                pass
+            try:
+                picam2.close()
             except Exception:
                 pass
         if witty_hold_armed:
