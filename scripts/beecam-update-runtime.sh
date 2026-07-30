@@ -14,6 +14,9 @@ WITTYPI_DIR="${PI_HOME}/wittypi"
 CAPTURE_SCRIPT="beecam_capture_final.py"
 REPO_BOOT_DIR="${REPO_DIR}/boot_firmware"
 BOOT_APPLY_SCRIPT="${SCRIPT_DIR}/beecam-apply-boot-config.sh"
+BOMBUS_MODEL_RELATIVE_DIR="beecam/camera/packerout/bombus_model_v1"
+BOMBUS_MODEL_RPK="${REPO_DIR}/${BOMBUS_MODEL_RELATIVE_DIR}/network.rpk"
+BOMBUS_MODEL_LABELS="${REPO_DIR}/${BOMBUS_MODEL_RELATIVE_DIR}/labels.txt"
 DO_GIT_PULL=false
 RESTART_MODE="auto"
 
@@ -66,6 +69,10 @@ require_cmd() {
 
 require_file() {
     [[ -e "$1" ]] || die "Missing required file: $1"
+}
+
+require_nonempty_file() {
+    [[ -s "$1" ]] || die "Missing or empty required file: $1"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -128,6 +135,8 @@ shopt -u nullglob
 [[ "$CAPTURE_SCRIPT" != */* ]] || die "--capture-script must be a filename, not a path"
 require_file "${REPO_DIR}/beecam/camera/${CAPTURE_SCRIPT}"
 require_file "${REPO_DIR}/beecam/camera/beecam_preview.py"
+require_nonempty_file "$BOMBUS_MODEL_RPK"
+require_nonempty_file "$BOMBUS_MODEL_LABELS"
 
 if [[ ! -d "$DATA_CONFIG_DIR" ]]; then
     die "${DATA_CONFIG_DIR} does not exist. Run the BeeCam installer or data initializer first."
@@ -184,6 +193,8 @@ sudo find "${APP_DIR}/camera" -maxdepth 1 -type f -name '*.py' \
     ! -name 'beecam_preview.py' \
     -delete
 sudo chown -R pi:pi "$APP_DIR"
+require_nonempty_file "${APP_DIR}/camera/packerout/bombus_model_v1/network.rpk"
+require_nonempty_file "${APP_DIR}/camera/packerout/bombus_model_v1/labels.txt"
 
 log "Replacing ${DATA_CONFIG_DIR} from repo configs"
 sudo rm -rf "$DATA_CONFIG_DIR"

@@ -8,6 +8,9 @@ REMOTE_SETUP="/home/pi/setup"
 REMOTE_DATA_ROOT="/home/pi/data"
 SSH_CONTROL_DIR=""
 SSH_CONTROL_PATH=""
+BOMBUS_MODEL_DIR="${SCRIPT_DIR}/beecam/camera/packerout/bombus_model_v1"
+BOMBUS_MODEL_RPK="${BOMBUS_MODEL_DIR}/network.rpk"
+BOMBUS_MODEL_LABELS="${BOMBUS_MODEL_DIR}/labels.txt"
 
 usage() {
     cat <<'USAGE'
@@ -30,6 +33,10 @@ die() {
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "'$1' is required but was not found."
+}
+
+require_nonempty_file() {
+    [[ -s "$1" ]] || die "Missing or empty required file: $1"
 }
 
 normalize_host() {
@@ -88,6 +95,9 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+require_nonempty_file "$BOMBUS_MODEL_RPK"
+require_nonempty_file "$BOMBUS_MODEL_LABELS"
 
 if [[ "${CAM_HOST:-}" == "" ]]; then
     read -r -p "Camera hostname, e.g. cam17: " CAM_HOST

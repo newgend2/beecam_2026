@@ -11,6 +11,7 @@ VIDEO_ARG="video=HDMI-A-1:800x480@60D"
 COHERENT_POOL_ARG="coherent_pool=2M"
 RUN_APT_UPDATE="${BEECAM_APT_UPDATE:-1}"
 RUN_FULL_UPGRADE="${BEECAM_FULL_UPGRADE:-0}"
+BOMBUS_MODEL_DIR="${SCRIPT_DIR}/beecam/camera/packerout/bombus_model_v1"
 
 log() {
     echo
@@ -25,6 +26,13 @@ warn() {
 require_file() {
     if [[ ! -e "$1" ]]; then
         echo "Missing required file: $1" >&2
+        exit 1
+    fi
+}
+
+require_nonempty_file() {
+    if [[ ! -s "$1" ]]; then
+        echo "Missing or empty required file: $1" >&2
         exit 1
     fi
 }
@@ -309,6 +317,8 @@ main() {
 
     require_file "${SCRIPT_DIR}/configs/camera_config_final.ini"
     require_file "${SCRIPT_DIR}/configs/schedule.conf"
+    require_nonempty_file "${BOMBUS_MODEL_DIR}/network.rpk"
+    require_nonempty_file "${BOMBUS_MODEL_DIR}/labels.txt"
 
     install_data_initializer
     install_apt_packages
