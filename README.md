@@ -65,12 +65,20 @@ Previous runtime files are backed up to `/home/pi/data/update_backups/` before r
 Shut the Pi down, move the SD card to a Linux PC, mount it, then:
 
 ```bash
-./transfer_beecam.sh                                  # auto-detect card
-./transfer_beecam.sh /media/user/rootfs /media/backup # explicit source + dest
+sudo ./transfer_beecam.sh                                  # auto-detect card, pick a drive from a list
+sudo ./transfer_beecam.sh --dest /media/user/Expansion/cams # explicit destination
+sudo ./transfer_beecam.sh /media/user/rootfs /media/backup  # explicit source + dest
 ```
 
 - Auto-detects cards under `/media/wlab`, `/media/nate`, `/media/field3`.
-- Writes `HOST_DATERANGE_YYYY-MM-DD-HH-MM-SS.zip` to the destination, then clears transferred data, flushes, and unmounts the card.
+- Without a destination it lists mounted drives under `/media/<user>` with free space to choose from.
+  It refuses the card itself, `/mnt/nas*`, and the reviewed-images drive `T7 Shield`.
+- Writes `HOST_DATERANGE_YYYY-MM-DD-HH-MM-SS.zip`, verifies it (`unzip -t`, file count and bytes
+  against the card, recorded in `<zip>.verify.txt`), and only then clears transferred data,
+  flushes, unmounts and powers off the card. A failed verification leaves the card untouched.
+- `--no-clear` copies and verifies only. `--skip-unreadable` (failing card) leaves out unreadable
+  files, lists them in `<zip>.unreadable.txt`, and never clears. `--yes` skips the confirmation.
+- `transfer_beecam_copyonly.sh` is `transfer_beecam.sh --no-clear --yes`.
 - Run with `sudo` if it reports permission errors (ext4 root-owned files).
 
 ---
